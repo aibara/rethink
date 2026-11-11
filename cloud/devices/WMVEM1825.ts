@@ -111,7 +111,9 @@ export default class Device extends AABBDevice {
                         icon: 'mdi:clock-check-outline',
                         unique_id: '$deviceid-clock_sync',
                         command_topic: '$this/clock_sync/set',
-                        payload_press: 'PRESS',
+                        // HA renders the time at press, in its own time zone, so the displayed clock
+                        // follows the HA installation rather than wherever rethink runs.
+                        command_template: "{{ now().strftime('%H:%M') }}",
                         name: 'Sync clock',
                     },
                     beeper: {
@@ -233,9 +235,12 @@ export default class Device extends AABBDevice {
             this.lightLevel = Math.min(2, Math.max(0, Math.round(value)))
             this.sendHoodCommand()
         } else if (prop === 'clock_sync') {
-            if (mqttValue !== 'PRESS') return
-            const now = new Date()
-            this.sendClock(now.getHours(), now.getMinutes())
+            const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(mqttValue)
+            if (!match) {
+                console.warn(`clock_sync expects HH:MM, got ${mqttValue}`)
+                return
+            }
+            this.sendClock(Number(match[1]), Number(match[2]))
         } else if (prop === 'beeper') {
             if (mqttValue === 'ON' || mqttValue === 'OFF') this.sendBeeper(mqttValue === 'ON')
         } else {

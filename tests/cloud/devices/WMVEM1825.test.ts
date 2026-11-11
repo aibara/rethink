@@ -97,6 +97,7 @@ describe(MODEL_ID, () => {
         assert.equal(components.clock_sync.platform, 'button')
         assert.equal(components.clock_sync.command_topic, '$this/clock_sync/set')
         assert.equal(components.clock_sync.state_topic, undefined)
+        assert.equal(components.clock_sync.command_template, "{{ now().strftime('%H:%M') }}")
         assert.equal(components.beeper.platform, 'switch')
         assert.equal(components.beeper.state_topic, '$this/beeper')
         assert.equal(components.beeper.command_topic, '$this/beeper/set')
@@ -232,19 +233,21 @@ describe(MODEL_ID, () => {
         assert.equal(hex(thinq.outbox[0]), 'AA15F043210E0D05008080808080808080FF80E7BB')
     })
 
-    test('clock sync sends the host time and leaves every other preference unchanged', () => {
+    test('clock sync writes the time HA sends and leaves every other preference unchanged', () => {
         const { thinq, dev } = makeDevice()
 
-        dev.setProperty('clock_sync', 'PRESS')
+        dev.setProperty('clock_sync', '13:05')
 
         assert.equal(thinq.outbox.length, 1)
-        const frame = thinq.outbox[0]
-        const payload = frame.subarray(6, frame.length - 2)
-        assert.equal(hex(frame.subarray(0, 6)), 'AA15F043210E')
-        assert.ok(payload[0] < 24)
-        assert.ok(payload[1] < 60)
-        assert.equal(payload[2], 0x00)
-        assert.deepEqual([...payload.subarray(3)], [...Array(8).fill(0x80), 0xff, 0x80])
+        assert.equal(hex(thinq.outbox[0]), 'AA15F043210E0D05008080808080808080FF80E7BB')
+    })
+
+    test('clock sync ignores payloads that are not a valid HH:MM time', () => {
+        const { thinq, dev } = makeDevice()
+
+        for (const payload of ['PRESS', '24:00', '12:60', '7', '']) dev.setProperty('clock_sync', payload)
+
+        assert.equal(thinq.outbox.length, 0)
     })
 
     // Captured 2026-09-10. Payload index 3 = 0 silenced the keys (confirmed at the panel); 1 brought
