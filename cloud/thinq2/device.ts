@@ -72,7 +72,10 @@ function trimNull(buf: Buffer) {
 type ClientWithExtra = Client & {
     deviceObj: undefined | Device
     deployMsg: undefined | ClipDeployMessage
+    newProvisioningSent?: boolean
 }
+
+const NEW_PROVISIONING_DELAY_MS = 4000
 
 type DeviceAcceptorEvents = {
     newDevice: (dev: Device) => void
@@ -137,10 +140,35 @@ export class DeviceAcceptor extends TypedEmitter<DeviceAcceptorEvents> {
                     null,
                 )
 
+                if (payload.cmd === 'preDeploy') this.scheduleNewProvisioning(payload.did, client)
+
                 if (!client.deviceObj) this.completeProvisioning(payload.did, client.deployMsg, client)
                 else console.warn(`device ${payload.did} already set up`)
             }
         }
+    }
+
+    // LG's cloud follows the completeProvisioning reply to a preDeploy with newProvisioning about 4 s
+    // later. Without it, a freshly paired device never finishes provisioning: after a few minutes it
+    // undeploys, switches its Wi-Fi off and forgets the network. With it, the device answers deploy and
+    // reconnects with deploy from then on. Sent on a timer rather than on completeProvisioning_ack,
+    // because some devices never send the ack. See anszom/rethink#317.
+    scheduleNewProvisioning(deviceId: string, client: ClientWithExtra) {
+        if (client.newProvisioningSent) return
+        client.newProvisioningSent = true
+        setTimeout(() => {
+            log('status', `sending newProvisioning to ${deviceId}`)
+            this.broker.publish(
+                {
+                    topic: 'lime/devices/' + deviceId,
+                    retain: false,
+                    qos: 0,
+                    dup: false,
+                    payload: JSON.stringify({ did: deviceId, mid: 0, cmd: 'newProvisioning', type: 0, data: null }),
+                },
+                null,
+            )
+        }, NEW_PROVISIONING_DELAY_MS)
     }
 
     completeProvisioning(deviceId: string, deployMsg: ClipDeployMessage, client: ClientWithExtra) {
