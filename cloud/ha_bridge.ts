@@ -119,6 +119,8 @@ const t2deviceTypes: Record<string, T2Factory> = {
     TLVE5BB, // LG WT21BWV6 top-load washer, long 0xFF-escaped AABB framing with 50-byte records
     BDH_D30007_US, // LG DLHC5502V heat-pump dryer, long 0xFF-escaped AABB framing with 42-byte records
     FAFXU22007, // LG WM6700HBA front-load washer, long 0xFF-escaped AABB framing with 51-byte records
+    // LG WM5500HVA front-load washer: unverified guess that it shares the WM6700HBA layout
+    FAFXU22027: FAFXU22007,
     BDVG_FX0003_US, // LG DLEX6700B electric dryer, long 0xFF-escaped AABB framing with 42-byte records
     DHUM_056905_WW,
     ST_B_E4H01Y_APL,
