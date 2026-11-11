@@ -26,17 +26,14 @@ const ENVELOPE_TYPE = 0x0a
 const INNER_TYPE_OFFSET = 10
 const INNER_LEN_OFFSET = 11
 
+// Models in this family share the record layout but not its length: the WM5500HVA's record stops at 49
+// bytes, before OPT7 (QuickLoadSense).
 const RECORD_LEN = 51
 
+// 0xec carries the previous record, then the current one; 0xeb only the current one
 const STATUS_FRAME_TYPE = 0xec
-const STATUS_INNER_LEN = 2 * RECORD_LEN
-const STATUS_RECORD_OFFSET = 13 + RECORD_LEN // skip the "previous state" record
-const STATUS_BUF_LEN = 13 + STATUS_INNER_LEN + 1
-
 const SINGLE_STATUS_FRAME_TYPE = 0xeb
-const SINGLE_INNER_LEN = RECORD_LEN
 const SINGLE_RECORD_OFFSET = 13
-const SINGLE_BUF_LEN = 13 + SINGLE_INNER_LEN + 1
 
 // The door is only an event, never in the record, and not sent at power-on:
 //
@@ -367,8 +364,14 @@ const hex2 = (v: number) => v.toString(16).padStart(2, '0')
 const bit = (byte: number, mask: number) => ((byte & mask) !== 0 ? 1 : 0)
 
 export default class Device extends AABBDevice {
-    constructor(HA: Connection, thinq: Thinq2Device, meta: Metadata) {
+    constructor(
+        HA: Connection,
+        thinq: Thinq2Device,
+        meta: Metadata,
+        readonly recordLen = RECORD_LEN,
+    ) {
         super(HA, thinq, true)
+        const hasOpt7 = recordLen > OPT7_OFFSET
         this.setConfig(
             allowExtendedType({
                 ...HADevice.config(meta, { name: 'LG Washer' }),
@@ -663,15 +666,17 @@ export default class Device extends AABBDevice {
                         icon: 'mdi:sort',
                         entity_category: 'config',
                     },
-                    quick_load_sense: {
-                        platform: 'switch',
-                        unique_id: '$deviceid-quick_load_sense',
-                        state_topic: '$this/quick_load_sense',
-                        command_topic: '$this/quick_load_sense/set',
-                        name: 'QuickLoadSense',
-                        icon: 'mdi:scale',
-                        entity_category: 'config',
-                    },
+                    ...(hasOpt7 && {
+                        quick_load_sense: {
+                            platform: 'switch',
+                            unique_id: '$deviceid-quick_load_sense',
+                            state_topic: '$this/quick_load_sense',
+                            command_topic: '$this/quick_load_sense/set',
+                            name: 'QuickLoadSense',
+                            icon: 'mdi:scale',
+                            entity_category: 'config',
+                        },
+                    }),
                     current_time_display: {
                         platform: 'switch',
                         unique_id: '$deviceid-current_time_display',
@@ -894,18 +899,19 @@ export default class Device extends AABBDevice {
             const failed = results.find((result) => result !== undefined && !WRITE_OK.has(result))
             if (own) this.setProblem(failed === undefined ? undefined : `Command refused (0x${hex2(failed)})`)
             if (results.includes(WRITE_REFUSED) || results.includes(WRITE_BUSY)) return
-            return this.processStatus(buf, recordOffset, recordOffset + RECORD_LEN)
+            return this.processStatus(buf, recordOffset, recordOffset + this.recordLen)
         }
         if (buf.length < 13 || buf[1] !== ENVELOPE_TYPE) return
 
         const innerLen = buf.readUInt16BE(INNER_LEN_OFFSET)
         switch (buf[INNER_TYPE_OFFSET]) {
             case STATUS_FRAME_TYPE:
-                if (innerLen !== STATUS_INNER_LEN) return
-                return this.processStatus(buf, STATUS_RECORD_OFFSET, STATUS_BUF_LEN)
+                if (innerLen !== 2 * this.recordLen) return
+                // skip the "previous state" record
+                return this.processStatus(buf, 13 + this.recordLen, 13 + 2 * this.recordLen + 1)
             case SINGLE_STATUS_FRAME_TYPE:
-                if (innerLen !== SINGLE_INNER_LEN) return
-                return this.processStatus(buf, SINGLE_RECORD_OFFSET, SINGLE_BUF_LEN)
+                if (innerLen !== this.recordLen) return
+                return this.processStatus(buf, SINGLE_RECORD_OFFSET, 13 + this.recordLen + 1)
             case EVENT_FRAME_TYPE:
                 if (
                     innerLen === COMPLETION_INNER_LEN &&
@@ -936,7 +942,7 @@ export default class Device extends AABBDevice {
 
     private processStatus(buf: Buffer, recordOffset: number, expectedLen: number) {
         if (buf.length !== expectedLen) return
-        const rec = buf.subarray(recordOffset, recordOffset + RECORD_LEN)
+        const rec = buf.subarray(recordOffset, recordOffset + this.recordLen)
 
         const state = rec[STATE_OFFSET]
         if ([0, 1].includes(state)) this.completionState = 'unarmed'
@@ -991,7 +997,8 @@ export default class Device extends AABBDevice {
         this.publishProperty('door_lock', onOff((rec[DOOR_LOCK_OFFSET] & DOOR_LOCK_MASK) !== 0))
         this.publishProperty('remote_start', onOff((rec[OPT4_OFFSET] & OPT4_REMOTE_START) !== 0))
         this.publishProperty('drawer', onOff((rec[OPT5_OFFSET] & OPT5_DRAWER_CLOSED) === 0))
-        this.publishProperty('quick_load_sense', onOff((rec[OPT7_OFFSET] & OPT7_QUICK_LOAD_SENSE) !== 0))
+        if (rec.length > OPT7_OFFSET)
+            this.publishProperty('quick_load_sense', onOff((rec[OPT7_OFFSET] & OPT7_QUICK_LOAD_SENSE) !== 0))
         this.publishProperty('melody', ENDING_MELODY.map(rec[MELODY_OFFSET]))
         this.publishProperty('splash_screen', SPLASH_SCREEN.map(rec[SPLASH_SCREEN_OFFSET]))
         this.publishProperty(
