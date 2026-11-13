@@ -137,10 +137,34 @@ function t2setup(manager: DeviceManager) {
     const broker = new Broker()
 
     if (config.mqtt) {
-        if (config.mqtts_port.bind)
-            tls.createServer(tlsOptions, broker.accept.bind(broker)).listen(config.mqtts_port.bind)
+        if (config.mqtts_port.bind) {
+            // With mqtts_client_auth, a client gets past the handshake only with a certificate
+            // our CA signed. The appliances have one: they had it issued over HTTPS before
+            // they ever connect here.
+            const mqttsOptions: tls.TlsOptions = config.mqtts_client_auth
+                ? { ...tlsOptions, ca: [ca.cert], requestCert: true, rejectUnauthorized: true }
+                : tlsOptions
+            const server = tls.createServer(mqttsOptions, broker.accept.bind(broker))
+            if (config.mqtts_client_auth) {
+                server.on('secureConnection', (socket) => {
+                    const subject = socket.getPeerX509Certificate()?.subject.split('\n').join(', ')
+                    log('status', `MQTTS client ${socket.remoteAddress} authenticated as ${subject}`)
+                })
+                server.on('tlsClientError', (err, socket) => {
+                    log('status', `MQTTS client ${socket.remoteAddress} refused: ${err.message}`)
+                })
+            }
+            server.listen(config.mqtts_port.bind)
+        }
 
-        if (config.mqtt_port.bind) net.createServer({}, broker.accept.bind(broker)).listen(config.mqtt_port.bind)
+        if (config.mqtt_port.bind) {
+            if (config.mqtts_client_auth)
+                log(
+                    'status',
+                    'Warning: mqtt_port accepts clients without any authentication, despite mqtts_client_auth',
+                )
+            net.createServer({}, broker.accept.bind(broker)).listen(config.mqtt_port.bind)
+        }
     }
 
     const acceptor = new T2Acceptor(broker)

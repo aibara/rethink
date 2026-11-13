@@ -30,6 +30,14 @@ export function routes(config: Config, ca: CA, rootCertificate = ca.cert) {
     })
 
     router.post('/device/:deviceId/certificate', (req, res) => {
+        // Anyone who can reach this port could otherwise get a certificate that
+        // mqtts_client_auth accepts. Closed, only appliances paired while it was open connect.
+        if (config.certificate_issuance === 'closed') {
+            log('status', `Refused a certificate for ${req.params.deviceId}: certificate_issuance is closed`)
+            res.status(403).json({ resultCode: '9999', result: {} })
+            return
+        }
+
         // 0x64 is what openssl made of the `-set_serial 0100` we used to pass (it reads
         // unprefixed values as decimal). Every device gets the same serial, as before.
         ca.signCertificateRequest(String(req.body.csr), '64').then(

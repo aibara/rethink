@@ -60,7 +60,9 @@ export class CertificateIssuer {
 
         const context = this.issue(servername).then((cert) => {
             log('status', `Issued a certificate for ${servername}`)
-            return createSecureContext(cert)
+            // The context picked by SNI replaces the listener's, trust store included, so it
+            // needs our CA to verify the client certificates a listener may ask for.
+            return createSecureContext({ ...cert, ca: [this.ca.cert] })
         })
         context.catch((err) => {
             // Drop it, so the next handshake for this name gets another try.

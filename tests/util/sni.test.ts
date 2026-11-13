@@ -5,6 +5,7 @@ import * as tls from 'node:tls'
 import { AddressInfo } from 'node:net'
 import { CertificateIssuer, isPlausibleHostname } from '@/util/sni'
 import { CA } from '@/util/ca'
+import { createCertificateRequest } from '@/util/pki'
 
 const HOSTNAME = 'rethink.lan'
 // Two names taken from Korean units of the same model that disagree about which one they ask for.
@@ -96,6 +97,57 @@ describe('TLS handshake', () => {
     test('two units asking for different names both get a matching certificate', async () => {
         assert.equal((await handshake(API_SNI)).subject, 'CN=' + API_SNI)
         assert.equal((await handshake(MQTT_SNI)).subject, 'CN=' + MQTT_SNI)
+    })
+
+    test('a context picked by SNI can verify client certificates our CA signed', async () => {
+        // A listener that asks for client certificates, as mqtts_client_auth makes it. It
+        // greets only the clients it accepted.
+        const authServer = tls.createServer(
+            { ...(await issuer.listenerOptions()), ca: [ca.cert], requestCert: true, rejectUnauthorized: true },
+            (socket) => socket.end('accepted'),
+        )
+        await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve))
+        const authPort = (authServer.address() as AddressInfo).port
+
+        /** Whether the server accepted us. Under TLS 1.3 a refused client certificate shows up
+         * only after the client's handshake is done, often as a bare close, so judge by the
+         * greeting rather than by errors. */
+        const accepted = (options: tls.ConnectionOptions) =>
+            new Promise<boolean>((resolve) => {
+                let greeted = false
+                const socket = tls.connect({
+                    host: '127.0.0.1',
+                    port: authPort,
+                    ca: [ca.cert],
+                    rejectUnauthorized: true,
+                    ...options,
+                })
+                socket.on('data', (data) => (greeted ||= data.toString() === 'accepted'))
+                socket.on('error', () => undefined)
+                socket.on('close', () => resolve(greeted))
+            })
+
+        try {
+            const device = await createCertificateRequest('CN=device', 'ec-p256')
+            const cert = await ca.signCertificateRequest(device.csr, '64')
+            // A name minted on demand, so the context comes from the SNI callback.
+            assert.equal(await accepted({ servername: API_SNI, key: device.privateKey, cert }), true)
+            assert.equal(await accepted({ servername: HOSTNAME, key: device.privateKey, cert }), true)
+
+            assert.equal(await accepted({ servername: API_SNI }), false, 'no client certificate')
+
+            // Same name as ours ("Rethink CA"), different key: only the signature tells them apart.
+            const stranger = await CA.create()
+            const foreign = await createCertificateRequest('CN=intruder', 'ec-p256')
+            const foreignCert = await stranger.signCertificateRequest(foreign.csr, '64')
+            assert.equal(
+                await accepted({ servername: API_SNI, key: foreign.privateKey, cert: foreignCert }),
+                false,
+                'a certificate from another CA',
+            )
+        } finally {
+            await new Promise((resolve) => authServer.close(resolve))
+        }
     })
 
     test('a name we will not sign falls back to the default certificate', async () => {

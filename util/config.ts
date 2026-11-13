@@ -15,12 +15,16 @@ export type RawConfig = {
     thinq1_https_port?: PortDefinition
     thinq1_port?: PortDefinition
     mqtt?: boolean
+    mqtts_client_auth?: boolean
+    certificate_issuance?: CertificateIssuance
     bridge?: {
         storage_path: string
         dns?: string[]
     }
     log?: string[]
 }
+
+export type CertificateIssuance = 'open' | 'closed'
 
 export type PortDefinition =
     | number
@@ -46,6 +50,10 @@ export type Config = {
     thinq1_https_port: Port
     thinq1_port: Port
     mqtt: boolean
+    /** Only accept MQTTS clients that present a certificate our CA signed, see config.jsonc. */
+    mqtts_client_auth: boolean
+    /** Whether the provisioning endpoint signs device certificates, see config.jsonc. */
+    certificate_issuance: CertificateIssuance
     bridge?: {
         storage_path: string
         /** Resolvers for the bridge's upstream connections, see bridge/resolver.ts. */
@@ -96,10 +104,16 @@ function parseAdvertisedPort(input: PortDefinition | undefined, urlBase: string,
 }
 
 export function normalize(config: RawConfig): Config {
+    const issuance = config.certificate_issuance ?? 'open'
+    if (issuance !== 'open' && issuance !== 'closed')
+        throw new Error(`certificate_issuance must be "open" or "closed", not ${JSON.stringify(issuance)}`)
+
     return {
         log: ['status', 'incoming', 'HTTPS'],
         mqtt: true,
         ...config,
+        mqtts_client_auth: config.mqtts_client_auth ?? false,
+        certificate_issuance: issuance,
         http_port: parsePort(config.http_port),
         https_port: parseAdvertisedPort(config.https_port, `https://${config.hostname}`, 'https'),
         mqtts_port: parseAdvertisedPort(config.mqtts_port, `ssl://${config.hostname}`, 'mqtts'),

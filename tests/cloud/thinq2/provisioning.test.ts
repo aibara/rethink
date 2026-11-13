@@ -18,6 +18,8 @@ import * as net from 'node:net'
 import * as tls from 'node:tls'
 import { X509Certificate, webcrypto } from 'node:crypto'
 import { Pkcs10CertificateRequestGenerator, X509CertificateGenerator, cryptoProvider } from '@peculiar/x509'
+import { CA } from '@/util/ca'
+import { createCertificateRequest } from '@/util/pki'
 
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
 
@@ -601,3 +603,122 @@ v2Lgw21gVYb/Me49P0TPpUn4Kc2skweKzN9JiODZKzjCJmQfRZcaumA/V1c7hbSs
 4+URzoXudoBBkpGmlVPHM5K1GdbGik4=
 -----END PRIVATE KEY-----
 `
+
+// MQTT 3.1.1 CONNECT, clean session, client id "t", and the broker's accepting CONNACK.
+const MQTT_CONNECT = Buffer.from('100d00044d5154540402003c000174', 'hex')
+const MQTT_CONNACK_ACCEPTED = Buffer.from('20020000', 'hex')
+
+/**
+ * Whether the broker lets this client in: connect, optionally with a client certificate, and
+ * wait for the CONNACK. Judged by the broker's answer rather than by errors, because under
+ * TLS 1.3 a refused client certificate often shows up only as the connection closing.
+ */
+function brokerAccepts(port: number, caPem: string, client: { key?: string; cert?: string } = {}) {
+    return new Promise<boolean>((resolve) => {
+        let received = Buffer.alloc(0)
+        const socket = tls.connect(
+            { host: '127.0.0.1', port, servername: HOSTNAME, ca: [caPem], rejectUnauthorized: true, ...client },
+            () => socket.write(MQTT_CONNECT),
+        )
+        socket.on('data', (data: Buffer) => {
+            received = Buffer.concat([received, data])
+            if (received.subarray(0, 4).equals(MQTT_CONNACK_ACCEPTED)) {
+                socket.destroy()
+                resolve(true)
+            }
+        })
+        socket.on('error', () => undefined)
+        socket.on('close', () => resolve(false))
+    })
+}
+
+describe('mqtts_client_auth', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rethink-client-auth-'))
+    const instance = new Instance(directory)
+    let ports: Ports
+    let caPem: string
+
+    before(async () => {
+        ports = await reservePorts()
+        instance.writeConfig(ports, { mqtts_client_auth: true })
+        await instance.start()
+        const route = await getResult<{ certificatePem: string }>(
+            `https://${HOSTNAME}:${ports.https}/route/certificate?name=aws-iot`,
+            { rejectUnauthorized: false },
+        )
+        caPem = route.certificatePem
+    })
+
+    after(async () => {
+        await instance.stop()
+        rmSync(directory, { recursive: true, force: true })
+    })
+
+    /** A key and the certificate provisioning issues for it, the way an appliance gets one. */
+    async function provisionedDevice() {
+        const request = await createCertificateRequest(DEVICE_SUBJECT, 'ec-p256')
+        const result = await getResult<{ certificatePem: string }>(
+            `https://${HOSTNAME}:${ports.https}/device/0123456789ab/certificate`,
+            {
+                ca: [caPem],
+                rejectUnauthorized: true,
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ csr: request.csr }),
+            },
+        )
+        return { key: request.privateKey, cert: result.certificatePem }
+    }
+
+    test('a provisioned appliance connects with the certificate it was issued', async () => {
+        assert.equal(await brokerAccepts(ports.mqtts, caPem, await provisionedDevice()), true)
+    })
+
+    test('a client without a certificate is refused', async () => {
+        assert.equal(await brokerAccepts(ports.mqtts, caPem), false)
+    })
+
+    test('a certificate from some other CA is refused', async () => {
+        // Same name as ours ("Rethink CA"), different key: only the signature tells them apart.
+        const stranger = await CA.create()
+        const request = await createCertificateRequest(DEVICE_SUBJECT, 'ec-p256')
+        const cert = await stranger.signCertificateRequest(request.csr, '64')
+        assert.equal(await brokerAccepts(ports.mqtts, caPem, { key: request.privateKey, cert }), false)
+    })
+})
+
+describe('certificate_issuance closed', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'rethink-issuance-'))
+    const instance = new Instance(directory)
+    let ports: Ports
+
+    before(async () => {
+        ports = await reservePorts()
+        instance.writeConfig(ports, { certificate_issuance: 'closed' })
+        await instance.start()
+    })
+
+    after(async () => {
+        await instance.stop()
+        rmSync(directory, { recursive: true, force: true })
+    })
+
+    test('the csr endpoint refuses to sign', async () => {
+        const { csr } = await createCsr()
+        const response = await request(`https://${HOSTNAME}:${ports.https}/device/0123456789ab/certificate`, {
+            rejectUnauthorized: false,
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ csr }),
+        })
+        assert.equal(response.status, 403)
+        assert.equal(JSON.parse(response.body).resultCode, '9999')
+    })
+
+    test('the rest of provisioning still answers', async () => {
+        const route = await getResult<{ apiServer: string }>(`https://${HOSTNAME}:${ports.https}/route`, {
+            rejectUnauthorized: false,
+        })
+        assert.equal(route.apiServer, `https://${HOSTNAME}:${ports.https}`)
+    })
+})

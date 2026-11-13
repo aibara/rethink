@@ -61,6 +61,18 @@
   "https_port": 443,
   "mqtts_port": 8883,
 
+  // Locking down the device-facing ports, for when other machines can reach them. Both are
+  // off by default.
+  // "mqtts_client_auth": true accepts an MQTTS client only if it presents a certificate our
+  //   CA signed. ThinQ2 appliances already hold one: provisioning issues it over HTTPS
+  //   before the appliance first connects. Without this, anyone who can reach the port can
+  //   read every appliance's traffic and send them commands.
+  // "certificate_issuance": "closed" stops signing new device certificates, so nobody can
+  //   simply ask for one. Set it to "open" while pairing an appliance, then close it again.
+  //   The two belong together: open issuance hands a valid certificate to anyone.
+  // "mqtts_client_auth": false,
+  // "certificate_issuance": "open",
+
   // optional, useful for local testing, debugging or reverse-proxy scenarios
   // "http_port": 80,
   // "mqtt_port": 1884,
