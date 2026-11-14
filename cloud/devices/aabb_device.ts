@@ -63,6 +63,24 @@ export default class AABBDevice extends T2Device {
         }
     }
 
+    // Whether an unframed long frame ends right after its records at `recordsEnd`: either just the long
+    // framing's checksum byte, or a block before it. The WM5500HVA (FAFXU22027) and the DLGX5501V
+    // (BDVG_FX0003_US) end every event (inner type 0x03) with one:
+    //
+    //     01 05 00 25 [37 bytes: model name, zero-padded to 16, then 21 bytes] [checksum byte]
+    //
+    // while the WM6700HBA (FAFXU22007) sends its events without it.
+    static endsAfterRecords(buf: Buffer, recordsEnd: number) {
+        const rest = buf.length - recordsEnd
+        if (rest === 1) return true
+        return (
+            rest >= 5 &&
+            buf[recordsEnd] === 0x01 &&
+            buf[recordsEnd + 1] === 0x05 &&
+            rest === 4 + buf.readUInt16BE(recordsEnd + 2) + 1
+        )
+    }
+
     send(inner: Buffer) {
         this.send_packet(AABBDevice.frame(inner))
     }

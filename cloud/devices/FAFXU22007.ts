@@ -46,7 +46,6 @@ const EVENT_FRAME_TYPE = 0x03
 const COMPLETION_PREFIX = Buffer.from([0x08, 0x0b, 0x01, 0x0b, 0x08])
 const COMPLETION_INNER_LEN = 121
 const DOOR_EVENT_INNER_LEN = 6
-const DOOR_EVENT_BUF_LEN = 13 + DOOR_EVENT_INNER_LEN + 1
 
 const DOOR_EVENT_ID = 0x10
 const DOOR_EVENT_ID_OFFSETS = [13, 17]
@@ -915,7 +914,7 @@ export default class Device extends AABBDevice {
             case EVENT_FRAME_TYPE:
                 if (
                     innerLen === COMPLETION_INNER_LEN &&
-                    buf.length === 13 + COMPLETION_INNER_LEN + 1 &&
+                    AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
                     buf.subarray(13, 18).equals(COMPLETION_PREFIX)
                 ) {
                     if (this.completionState === 'armed') {
@@ -933,7 +932,7 @@ export default class Device extends AABBDevice {
 
     // The panel menu event (id 0x11) has the same length.
     private processDoorEvent(buf: Buffer) {
-        if (buf.length !== DOOR_EVENT_BUF_LEN) return
+        if (!AABBDevice.endsAfterRecords(buf, 13 + DOOR_EVENT_INNER_LEN)) return
         if (DOOR_EVENT_ID_OFFSETS.some((o) => buf[o] !== DOOR_EVENT_ID)) return
         const door = buf[DOOR_EVENT_VALUE_OFFSET]
         if (door !== DOOR_OPEN && door !== DOOR_SHUT) return

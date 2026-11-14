@@ -721,7 +721,7 @@ export default class Device extends AABBDevice {
             case EVENT_FRAME_TYPE:
                 if (
                     innerLen === COMPLETION_INNER_LEN &&
-                    buf.length === 13 + COMPLETION_INNER_LEN + 1 &&
+                    AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
                     buf.subarray(13, 18).equals(COMPLETION_PREFIX)
                 ) {
                     if (this.completionState === 'armed') {

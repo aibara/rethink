@@ -1458,3 +1458,21 @@ describe('BDVG_FX0003_US completion notifications', () => {
         assert.equal(events().length, 1)
     })
 })
+
+// From a DLGX5501V's capture, 2026-11-14: the completion notification as the dryer sends it, ending with
+// 01 05 00 25, the model name and 21 more bytes before the checksum.
+const CAPTURED_COMPLETION = buf(
+    'aaff300a00570026ba00020103001c030a0204030399000902030100250001ff03000105040400a900040001050025424456475f4658303030335f55530000000000000102cc9483c406070000000000000000002f25bb',
+)
+
+describe('BDVG_FX0003_US captured completion', () => {
+    test('a completion notification with the trailing block finishes the cycle', (t) => {
+        const { ha, thinq } = makeDevice()
+        const publish = t.mock.method(ha, 'publishProperty')
+        const finished = () => publish.mock.calls.filter((call) => call.arguments[1] === 'cycle_finished')
+        thinq.emit('data', DRYING)
+        thinq.emit('data', CAPTURED_COMPLETION)
+        assert.equal(finished().length, 1)
+    })
+})
+
