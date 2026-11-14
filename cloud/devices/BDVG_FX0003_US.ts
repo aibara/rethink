@@ -110,6 +110,8 @@ const EVENT_FRAME_TYPE = 0x03
 // The following two bytes are a cycle counter, not part of the event signature.
 const COMPLETION_PREFIX = Buffer.from([0x03, 0x0a, 0x02, 0x04, 0x03])
 const COMPLETION_INNER_LEN = 28
+// What follows the id in every event: 0b 0a 02 04 0b, 03 0a 02 04 03, ...
+const EVENT_SIGNATURE = Buffer.from([0x0a, 0x02, 0x04])
 const EVENT_INNER_LEN = 18
 const EVENT_PAYLOAD_OFFSET = 13
 
@@ -435,6 +437,15 @@ export default class Device extends AABBDevice {
                         name: 'Drum light',
                         icon: 'mdi:lightbulb',
                     },
+                    cycle_count: {
+                        platform: 'sensor',
+                        unique_id: '$deviceid-cycle_count',
+                        state_topic: '$this/cycle_count',
+                        name: 'Cycles',
+                        icon: 'mdi:counter',
+                        state_class: 'total_increasing',
+                        entity_category: 'diagnostic',
+                    },
                     steam: {
                         platform: 'switch',
                         unique_id: '$deviceid-steam',
@@ -718,7 +729,9 @@ export default class Device extends AABBDevice {
                 if (innerLen !== SINGLE_INNER_LEN) return
                 this.writeAnswered(STATUS_REQUEST_TYPE)
                 return this.processStatus(buf, SINGLE_RECORD_OFFSET, SINGLE_BUF_LEN)
-            case EVENT_FRAME_TYPE:
+            case EVENT_FRAME_TYPE: {
+                const cycles = AABBDevice.eventCycleCount(buf, innerLen, EVENT_SIGNATURE)
+                if (cycles !== undefined) this.publishProperty('cycle_count', cycles)
                 if (
                     innerLen === COMPLETION_INNER_LEN &&
                     AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
@@ -734,6 +747,7 @@ export default class Device extends AABBDevice {
                 }
                 if (innerLen !== EVENT_INNER_LEN || buf.length < EVENT_PAYLOAD_OFFSET + EVENT_INNER_LEN) return
                 return this.processEvent(buf.subarray(EVENT_PAYLOAD_OFFSET, EVENT_PAYLOAD_OFFSET + EVENT_INNER_LEN))
+            }
         }
     }
 

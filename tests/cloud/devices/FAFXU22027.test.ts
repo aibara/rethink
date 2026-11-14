@@ -90,4 +90,35 @@ describe('FAFXU22027', () => {
         thinq.emit('data', bad)
         assert.equal(ha.devices[DEVICE_ID].properties.door, undefined)
     })
+
+    test('publishes the cycle count from events that carry one, and not from door events', () => {
+        const { ha, thinq } = makeDevice()
+        const p = () => ha.devices[DEVICE_ID].properties
+        thinq.emit('data', DOOR_OPEN)
+        thinq.emit('data', PANEL_MENU)
+        assert.equal(p().cycle_count, undefined)
+        thinq.emit('data', COMPLETION) // 08 0b 01 0b 08 02 a2: the 674th cycle
+        assert.equal(p().cycle_count, 674)
+    })
+
+    test('has no ezDispense entities, and publishes none of their values', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', EB_IDLE)
+        const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
+        const props = ha.devices[DEVICE_ID].properties
+        for (const key of [
+            'drawer',
+            'ez_dispense_detergent',
+            'ez_dispense_softener',
+            'detergent_amount',
+            'softener_amount',
+            'softener_tank_use',
+            'nozzle_clean_tank',
+        ]) {
+            assert.equal(components[key], undefined, key)
+            assert.equal(props[key], undefined, key)
+        }
+        assert.ok(components.cycle_count)
+        assert.ok(components.tub_clean_count)
+    })
 })

@@ -63,6 +63,21 @@ export default class AABBDevice extends T2Device {
         }
     }
 
+    // The running cycle count that LG laundry events carry after their id and signature, if this event
+    // (inner type 0x03, records at 13) has one:
+    //
+    //     id [signature, 3 bytes] id [count16] [sequence16] ...
+    //                                 │          └ this cycle's events, from 0
+    //                                 └ one more as each cycle starts (672, 673, 674 over three WM5500HVA
+    //                                   washes; 917 to 921 on a DLGX5501V)
+    //
+    // The WM5500HVA's door and panel-menu events stop right after the id, and carry none.
+    static eventCycleCount(buf: Buffer, innerLen: number, signature: Buffer) {
+        if (innerLen < 9 || buf.length < 13 + innerLen) return undefined
+        if (!buf.subarray(14, 17).equals(signature) || buf[17] !== buf[13]) return undefined
+        return buf.readUInt16BE(18)
+    }
+
     // Whether an unframed long frame ends right after its records at `recordsEnd`: either just the long
     // framing's checksum byte, or a block before it. The WM5500HVA (FAFXU22027) and the DLGX5501V
     // (BDVG_FX0003_US) end every event (inner type 0x03) with one:

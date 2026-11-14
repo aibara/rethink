@@ -46,6 +46,8 @@ const EVENT_FRAME_TYPE = 0x03
 const COMPLETION_PREFIX = Buffer.from([0x08, 0x0b, 0x01, 0x0b, 0x08])
 const COMPLETION_INNER_LEN = 121
 const DOOR_EVENT_INNER_LEN = 6
+// What follows the id in every event: 10 0b 01 0b 10, 08 0b 01 0b 08, ...
+const EVENT_SIGNATURE = Buffer.from([0x0b, 0x01, 0x0b])
 
 const DOOR_EVENT_ID = 0x10
 const DOOR_EVENT_ID_OFFSETS = [13, 17]
@@ -368,6 +370,8 @@ export default class Device extends AABBDevice {
         thinq: Thinq2Device,
         meta: Metadata,
         readonly recordLen = RECORD_LEN,
+        // the ezDispense reservoirs: their levels, default amounts, drawer and nozzle cleaning
+        readonly hasEzDispense = true,
     ) {
         super(HA, thinq, true)
         const hasOpt7 = recordLen > OPT7_OFFSET
@@ -488,13 +492,15 @@ export default class Device extends AABBDevice {
                         name: 'Door',
                         device_class: 'door',
                     },
-                    drawer: {
-                        platform: 'binary_sensor',
-                        unique_id: '$deviceid-drawer',
-                        state_topic: '$this/drawer',
-                        name: 'ezDispense drawer',
-                        device_class: 'opening',
-                    },
+                    ...(hasEzDispense && {
+                        drawer: {
+                            platform: 'binary_sensor',
+                            unique_id: '$deviceid-drawer',
+                            state_topic: '$this/drawer',
+                            name: 'ezDispense drawer',
+                            device_class: 'opening',
+                        },
+                    }),
                     tub_clean_count: {
                         platform: 'sensor',
                         unique_id: '$deviceid-tub_clean_count',
@@ -502,6 +508,15 @@ export default class Device extends AABBDevice {
                         name: 'Washes since drum clean',
                         icon: 'mdi:washing-machine-alert',
                         // no state_class: resets at each Tub Clean
+                        entity_category: 'diagnostic',
+                    },
+                    cycle_count: {
+                        platform: 'sensor',
+                        unique_id: '$deviceid-cycle_count',
+                        state_topic: '$this/cycle_count',
+                        name: 'Cycles',
+                        icon: 'mdi:counter',
+                        state_class: 'total_increasing',
                         entity_category: 'diagnostic',
                     },
                     // refused while off
@@ -598,64 +613,66 @@ export default class Device extends AABBDevice {
                         icon: 'mdi:lock',
                         entity_category: 'diagnostic',
                     },
-                    ez_dispense_detergent: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-ez_dispense_detergent',
-                        state_topic: '$this/ez_dispense_detergent',
-                        name: 'Detergent Level',
-                        icon: 'mdi:cup-water',
-                        device_class: 'enum',
-                        options: DISPENSE_LEVEL.options,
-                    },
-                    ez_dispense_softener: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-ez_dispense_softener',
-                        state_topic: '$this/ez_dispense_softener',
-                        name: 'Softener Level',
-                        icon: 'mdi:cup-water',
-                        device_class: 'enum',
-                        options: DISPENSE_LEVEL.options,
-                    },
-                    detergent_amount: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-detergent_amount',
-                        state_topic: '$this/detergent_amount',
-                        name: 'Default detergent amount',
-                        icon: 'mdi:cup-water',
-                        device_class: 'volume',
-                        unit_of_measurement: 'mL',
-                        entity_category: 'diagnostic',
-                    },
-                    softener_amount: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-softener_amount',
-                        state_topic: '$this/softener_amount',
-                        name: 'Default softener amount',
-                        icon: 'mdi:cup-water',
-                        device_class: 'volume',
-                        unit_of_measurement: 'mL',
-                        entity_category: 'diagnostic',
-                    },
-                    softener_tank_use: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-softener_tank_use',
-                        state_topic: '$this/softener_tank_use',
-                        name: 'Softener Tank Use',
-                        icon: 'mdi:link-variant',
-                        device_class: 'enum',
-                        options: SOFTENER_TANK_USE.options,
-                        entity_category: 'diagnostic',
-                    },
-                    nozzle_clean_tank: {
-                        platform: 'sensor',
-                        unique_id: '$deviceid-nozzle_clean_tank',
-                        state_topic: '$this/nozzle_clean_tank',
-                        name: 'Nozzle Clean tank',
-                        icon: 'mdi:spray-bottle',
-                        device_class: 'enum',
-                        options: NOZZLE_CLEAN.options,
-                        entity_category: 'diagnostic',
-                    },
+                    ...(hasEzDispense && {
+                        ez_dispense_detergent: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-ez_dispense_detergent',
+                            state_topic: '$this/ez_dispense_detergent',
+                            name: 'Detergent Level',
+                            icon: 'mdi:cup-water',
+                            device_class: 'enum',
+                            options: DISPENSE_LEVEL.options,
+                        },
+                        ez_dispense_softener: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-ez_dispense_softener',
+                            state_topic: '$this/ez_dispense_softener',
+                            name: 'Softener Level',
+                            icon: 'mdi:cup-water',
+                            device_class: 'enum',
+                            options: DISPENSE_LEVEL.options,
+                        },
+                        detergent_amount: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-detergent_amount',
+                            state_topic: '$this/detergent_amount',
+                            name: 'Default detergent amount',
+                            icon: 'mdi:cup-water',
+                            device_class: 'volume',
+                            unit_of_measurement: 'mL',
+                            entity_category: 'diagnostic',
+                        },
+                        softener_amount: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-softener_amount',
+                            state_topic: '$this/softener_amount',
+                            name: 'Default softener amount',
+                            icon: 'mdi:cup-water',
+                            device_class: 'volume',
+                            unit_of_measurement: 'mL',
+                            entity_category: 'diagnostic',
+                        },
+                        softener_tank_use: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-softener_tank_use',
+                            state_topic: '$this/softener_tank_use',
+                            name: 'Softener Tank Use',
+                            icon: 'mdi:link-variant',
+                            device_class: 'enum',
+                            options: SOFTENER_TANK_USE.options,
+                            entity_category: 'diagnostic',
+                        },
+                        nozzle_clean_tank: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-nozzle_clean_tank',
+                            state_topic: '$this/nozzle_clean_tank',
+                            name: 'Nozzle Clean tank',
+                            icon: 'mdi:spray-bottle',
+                            device_class: 'enum',
+                            options: NOZZLE_CLEAN.options,
+                            entity_category: 'diagnostic',
+                        },
+                    }),
                     cycle_optimization: {
                         platform: 'switch',
                         unique_id: '$deviceid-cycle_optimization',
@@ -911,7 +928,9 @@ export default class Device extends AABBDevice {
             case SINGLE_STATUS_FRAME_TYPE:
                 if (innerLen !== this.recordLen) return
                 return this.processStatus(buf, SINGLE_RECORD_OFFSET, 13 + this.recordLen + 1)
-            case EVENT_FRAME_TYPE:
+            case EVENT_FRAME_TYPE: {
+                const cycles = AABBDevice.eventCycleCount(buf, innerLen, EVENT_SIGNATURE)
+                if (cycles !== undefined) this.publishProperty('cycle_count', cycles)
                 if (
                     innerLen === COMPLETION_INNER_LEN &&
                     AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
@@ -927,6 +946,7 @@ export default class Device extends AABBDevice {
                 }
                 if (innerLen !== DOOR_EVENT_INNER_LEN) return
                 return this.processDoorEvent(buf)
+            }
         }
     }
 
@@ -977,12 +997,14 @@ export default class Device extends AABBDevice {
         this.publishProperty('delay_start', (rec[OPT5_OFFSET] & OPT5_DELAY_START) !== 0 ? 'ON' : 'OFF')
         this.publishProperty('tub_clean_count', rec[TUB_CLEAN_COUNT_OFFSET])
         this.publishProperty('buzzer', BUZZER.map(rec[BUZZER_OFFSET]))
-        this.publishProperty('ez_dispense_detergent', DISPENSE_LEVEL.map(rec[DETERGENT_LEVEL_OFFSET]))
-        this.publishProperty('ez_dispense_softener', DISPENSE_LEVEL.map(rec[SOFTENER_LEVEL_OFFSET]))
-        this.publishProperty('detergent_amount', rec[DETERGENT_AMOUNT_OFFSET])
-        this.publishProperty('softener_amount', rec[SOFTENER_AMOUNT_OFFSET])
-        this.publishProperty('softener_tank_use', SOFTENER_TANK_USE.map(rec[SOFTENER_TANK_USE_OFFSET]))
-        this.publishProperty('nozzle_clean_tank', NOZZLE_CLEAN.map(rec[NOZZLE_CLEAN_OFFSET] & NOZZLE_CLEAN_MASK))
+        if (this.hasEzDispense) {
+            this.publishProperty('ez_dispense_detergent', DISPENSE_LEVEL.map(rec[DETERGENT_LEVEL_OFFSET]))
+            this.publishProperty('ez_dispense_softener', DISPENSE_LEVEL.map(rec[SOFTENER_LEVEL_OFFSET]))
+            this.publishProperty('detergent_amount', rec[DETERGENT_AMOUNT_OFFSET])
+            this.publishProperty('softener_amount', rec[SOFTENER_AMOUNT_OFFSET])
+            this.publishProperty('softener_tank_use', SOFTENER_TANK_USE.map(rec[SOFTENER_TANK_USE_OFFSET]))
+            this.publishProperty('nozzle_clean_tank', NOZZLE_CLEAN.map(rec[NOZZLE_CLEAN_OFFSET] & NOZZLE_CLEAN_MASK))
+        }
 
         const opt1 = rec[OPT1_OFFSET]
         this.publishProperty('turbo_wash', (opt1 & OPT1_TURBO_WASH) !== 0 ? 'ON' : 'OFF')
@@ -995,7 +1017,7 @@ export default class Device extends AABBDevice {
         this.publishProperty('remote_maintain', (rec[OPT6_OFFSET] & OPT6_REMOTE_MAINTAIN) !== 0 ? 'ON' : 'OFF')
         this.publishProperty('door_lock', onOff((rec[DOOR_LOCK_OFFSET] & DOOR_LOCK_MASK) !== 0))
         this.publishProperty('remote_start', onOff((rec[OPT4_OFFSET] & OPT4_REMOTE_START) !== 0))
-        this.publishProperty('drawer', onOff((rec[OPT5_OFFSET] & OPT5_DRAWER_CLOSED) === 0))
+        if (this.hasEzDispense) this.publishProperty('drawer', onOff((rec[OPT5_OFFSET] & OPT5_DRAWER_CLOSED) === 0))
         if (rec.length > OPT7_OFFSET)
             this.publishProperty('quick_load_sense', onOff((rec[OPT7_OFFSET] & OPT7_QUICK_LOAD_SENSE) !== 0))
         this.publishProperty('melody', ENDING_MELODY.map(rec[MELODY_OFFSET]))

@@ -793,13 +793,14 @@ describe('BDVG_FX0003_US', () => {
     })
 
     test('the door is an event, not a record field', () => {
-        assert.deepEqual(feed([DOOR_OPEN]), { power: 'ON', door: 'ON' })
+        // cycle_count 214: this capture's dryer had run 214 cycles
+        assert.deepEqual(feed([DOOR_OPEN]), { power: 'ON', door: 'ON', cycle_count: 214 })
         assert.equal(feed([DOOR_OPEN, DOOR_SHUT]).door, 'OFF')
         assert.equal(feed([EB_CONNECT]).door, undefined)
     })
 
     test('power follows the event payload byte 9, and the power-off record clears the course', () => {
-        assert.deepEqual(feed([POWER_ON_EVENT]), { power: 'OFF' })
+        assert.deepEqual(feed([POWER_ON_EVENT]), { power: 'OFF', cycle_count: 214 })
         const p = feed([APP_RACK_DRY, POWER_OFF_EVENT, POWER_OFF_RECORD])
         assert.equal(p.power, 'OFF')
         assert.equal(p.status, 'Off')
@@ -1474,5 +1475,10 @@ describe('BDVG_FX0003_US captured completion', () => {
         thinq.emit('data', CAPTURED_COMPLETION)
         assert.equal(finished().length, 1)
     })
-})
 
+    test('the cycle count comes from the events that carry it', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', CAPTURED_COMPLETION) // 03 0a 02 04 03 03 99: the 921st cycle
+        assert.equal(ha.devices['test-id'].properties.cycle_count, 921)
+    })
+})
