@@ -157,7 +157,19 @@ const SAMPLE_COOK_SUMMARY_SECOND = buf(
     'AA0041B200047E0A010300000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000202000000000003680010000600000000000F000B0000001C083B2A0000000018000000000000000065006F006F000000000000000001000000000000000001E1BB',
 )
 
+// The info event at connect, 2026-11-16 04:11:13 UTC (8:11:13 PM local): the clock reads 8:11:12.
+const SAMPLE_INFO = buf(
+    'AA0041B2000B510A01030101A9160300765341413433313135313031574D484553313733380000000000000000000000323032313039323743190041080B0C000100010300000000000001010101010101002C000000001CF1BB',
+)
+
 describe(`${MODEL_ID} cook reports`, () => {
+    test('publishes the clock from the info event at connect', () => {
+        const { ha, thinq } = makeDevice()
+        assert.ok((ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components.clock)
+        thinq.emit('data', SAMPLE_INFO)
+        assert.equal(ha.devices[DEVICE_ID].properties.clock, '8:11:12')
+    })
+
     test('publishes the last cook energy and the lifetime cook count', () => {
         const { ha, thinq } = makeDevice()
         const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components

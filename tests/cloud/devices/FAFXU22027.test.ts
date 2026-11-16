@@ -164,7 +164,30 @@ const LOG_WASHING = buf(
     'aaff200a0084002dec0002010200490b010b6502a40003170009020e021700000221222624282928282827eff0f1eff0000000000000000000000000000000000000000000000000000000000000000000000000b8250b4f0105002546414658553232303237000000000000000000000102cc9483c40607000000000000000000cc6cbb',
 )
 
+// The end-of-cycle summary (inner type 0x04, id 03) from the same wash: 3 rinses, peak water 45 °C.
+const SUMMARY = buf(
+    'aaff200a005700358400010104004503010100040506073900000100ff01550000000003162d00022318010004fd78780000fdfd000000fd000002a75505000003000620250056740000422c36dd48858109091abf68bb',
+)
+
 describe('FAFXU22027 cycle', () => {
+    test('publishes the rinses and peak water temperature from the end-of-cycle summary', () => {
+        const { ha, thinq } = makeDevice()
+        const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
+        assert.ok(components.rinse_count)
+        assert.ok(components.peak_water_temp)
+        thinq.emit('data', SUMMARY)
+        assert.equal(ha.devices[DEVICE_ID].properties.rinse_count, 3)
+        assert.equal(ha.devices[DEVICE_ID].properties.peak_water_temp, 45)
+    })
+
+    test('ignores a summary with an unknown prefix', () => {
+        const { ha, thinq } = makeDevice()
+        const bad = Buffer.from(SUMMARY)
+        bad[13 + 2] = 0x02
+        thinq.emit('data', bad)
+        assert.equal(ha.devices[DEVICE_ID].properties.rinse_count, undefined)
+    })
+
     test('skips the 0 washes-since-drum-clean in the first record after power-on', () => {
         const { ha, thinq } = makeDevice()
         const p = () => ha.devices[DEVICE_ID].properties

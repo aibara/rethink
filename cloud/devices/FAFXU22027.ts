@@ -6,7 +6,7 @@ import FAFXU22007 from './FAFXU22007'
 // LG WM5500HVA front-load washer. Its frames, acks and record layout match the WM6700HBA's (FAFXU22007),
 // but its status record is 49 bytes rather than 51: it stops before OPT7, which holds QuickLoadSense. It
 // has no ezDispense either: those bytes stay at their empty values.
-// It also sends a 5-minute log with the water temperature while running.
+// It also sends a 5-minute log with the water temperature while running, and a summary at the end of a cycle.
 // Status decoding has been checked against the appliance; writes have not.
 const RECORD_LEN = 49
 

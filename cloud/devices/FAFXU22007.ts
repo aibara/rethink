@@ -70,6 +70,15 @@ const LOG_PREFIX = Buffer.from([0x0b, 0x01, 0x0b, 0x65, 0x02])
 const LOG_WATER_TEMP_OFFSET = 40
 const WATER_TEMP_MAX = 100
 
+// Inner type 0x04, id 03: a summary the WM5500HVA sends once, as a cycle reaches End. 69 bytes, starting
+// 03 01 01 00 04 05 06 07. Checked over five washes: body[20] is the number of rinses (3 with +1 Extra Rinse,
+// 2 without) and body[22] the highest water temperature in °C (Warm 31, Hot 37-45, matching the log).
+const SUMMARY_FRAME_TYPE = 0x04
+const SUMMARY_INNER_LEN = 69
+const SUMMARY_PREFIX = Buffer.from('0301010004050607', 'hex')
+const SUMMARY_RINSES_OFFSET = 13 + 20
+const SUMMARY_PEAK_WATER_TEMP_OFFSET = 13 + 22
+
 // The d8 frame is not the ezDispense drawer, and is ignored:
 //
 //     aa 07 20 d8 17 <chk> bb
@@ -389,8 +398,8 @@ export default class Device extends AABBDevice {
         readonly recordLen = RECORD_LEN,
         // the ezDispense reservoirs: their levels, default amounts, drawer and nozzle cleaning
         readonly hasEzDispense = true,
-        // the 5-minute log with the water temperature
-        readonly logsWaterTemp = false,
+        // the 5-minute log with the water temperature, and the end-of-cycle summary
+        readonly hasCycleLogs = false,
     ) {
         super(HA, thinq, true)
         const hasOpt7 = recordLen > OPT7_OFFSET
@@ -529,7 +538,7 @@ export default class Device extends AABBDevice {
                         // no state_class: resets at each Tub Clean
                         entity_category: 'diagnostic',
                     },
-                    ...(logsWaterTemp && {
+                    ...(hasCycleLogs && {
                         water_temp: {
                             platform: 'sensor',
                             unique_id: '$deviceid-water_temp',
@@ -539,6 +548,22 @@ export default class Device extends AABBDevice {
                             device_class: 'temperature',
                             unit_of_measurement: '°C',
                             state_class: 'measurement',
+                        },
+                        rinse_count: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-rinse_count',
+                            state_topic: '$this/rinse_count',
+                            name: 'Last cycle rinses',
+                            icon: 'mdi:water-sync',
+                        },
+                        peak_water_temp: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-peak_water_temp',
+                            state_topic: '$this/peak_water_temp',
+                            name: 'Last cycle peak water temperature',
+                            icon: 'mdi:thermometer-water',
+                            device_class: 'temperature',
+                            unit_of_measurement: '°C',
                         },
                     }),
                     cycle_count: {
@@ -980,13 +1005,25 @@ export default class Device extends AABBDevice {
             }
             case LOG_FRAME_TYPE:
                 if (
-                    this.logsWaterTemp &&
+                    this.hasCycleLogs &&
                     innerLen === LOG_INNER_LEN &&
                     buf.subarray(13, 13 + LOG_PREFIX.length).equals(LOG_PREFIX) &&
                     AABBDevice.endsAfterRecords(buf, 13 + LOG_INNER_LEN)
                 ) {
                     const temp = buf[LOG_WATER_TEMP_OFFSET]
                     if (temp > 0 && temp < WATER_TEMP_MAX) this.publishProperty('water_temp', temp)
+                }
+                return
+            case SUMMARY_FRAME_TYPE:
+                if (
+                    this.hasCycleLogs &&
+                    innerLen === SUMMARY_INNER_LEN &&
+                    buf.subarray(13, 13 + SUMMARY_PREFIX.length).equals(SUMMARY_PREFIX) &&
+                    AABBDevice.endsAfterRecords(buf, 13 + SUMMARY_INNER_LEN)
+                ) {
+                    this.publishProperty('rinse_count', buf[SUMMARY_RINSES_OFFSET])
+                    const peak = buf[SUMMARY_PEAK_WATER_TEMP_OFFSET]
+                    if (peak > 0 && peak < WATER_TEMP_MAX) this.publishProperty('peak_water_temp', peak)
                 }
                 return
         }

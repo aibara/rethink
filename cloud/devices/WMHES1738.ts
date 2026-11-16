@@ -28,6 +28,15 @@ const COOK_SUMMARY_MARK = Buffer.from('02020000', 'hex')
 const COOK_SUMMARY_MARK_OFFSET = 67
 const COOK_COUNT_OFFSET = 74
 
+// At every connect: an 81-byte info event with the part number, "WMHES1738" and the firmware date, then the
+// appliance's clock, 12-hour, as hours, minutes, seconds after 43 19 00 41. On fourteen connects it was within
+// 2 s of local time (the clock is synced from HA daily).
+const INFO_EVENT = Buffer.from('41b2000b51', 'hex')
+const INFO_MODEL = Buffer.from('WMHES1738', 'ascii')
+const INFO_MODEL_OFFSET = 26
+const INFO_CLOCK_MARK = Buffer.from('43190041', 'hex')
+const INFO_CLOCK_OFFSET = 58
+
 // LG MHES1738F over-the-range microwave. Status records, door events and hood commands match the
 // MVEM1825, but the vent fan has five speeds instead of two.
 export default class Device extends WMVEM1825 {
@@ -41,6 +50,14 @@ export default class Device extends WMVEM1825 {
                 icon: 'mdi:lightning-bolt',
                 device_class: 'energy',
                 unit_of_measurement: 'Wh',
+            },
+            clock: {
+                platform: 'sensor',
+                unique_id: '$deviceid-clock',
+                state_topic: '$this/clock',
+                name: 'Clock at connect',
+                icon: 'mdi:clock-outline',
+                entity_category: 'diagnostic',
             },
             cook_count: {
                 platform: 'sensor',
@@ -69,6 +86,17 @@ export default class Device extends WMVEM1825 {
             buf.subarray(COOK_SUMMARY_MARK_OFFSET, COOK_SUMMARY_MARK_OFFSET + 4).equals(COOK_SUMMARY_MARK)
         ) {
             this.publishProperty('cook_count', buf.readUInt16BE(COOK_COUNT_OFFSET))
+            return
+        }
+        if (
+            buf.length === 5 + buf[4] &&
+            buf.subarray(0, 5).equals(INFO_EVENT) &&
+            buf.subarray(INFO_MODEL_OFFSET, INFO_MODEL_OFFSET + INFO_MODEL.length).equals(INFO_MODEL) &&
+            buf.subarray(INFO_CLOCK_OFFSET - 4, INFO_CLOCK_OFFSET).equals(INFO_CLOCK_MARK)
+        ) {
+            const [h, m, sec] = buf.subarray(INFO_CLOCK_OFFSET, INFO_CLOCK_OFFSET + 3)
+            if (h <= 12 && m < 60 && sec < 60)
+                this.publishProperty('clock', `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`)
             return
         }
         if (buf.length === 5 + buf[4] && buf.subarray(0, 4).equals(PAUSE_EVENT) && buf[PAUSE_DOOR_OPEN_OFFSET] === 1) {
