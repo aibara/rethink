@@ -56,6 +56,20 @@ const DOOR_EVENT_VALUE_OFFSET = 18
 const DOOR_OPEN = 1
 const DOOR_SHUT = 2
 
+// Inner type 0x02: a log the WM5500HVA sends every 5 minutes while a cycle runs (and at its start), 73 bytes
+// after the header, then the model block:
+//
+//     0b 01 0b 65 02 <seq16> 00 <phase> <group> ... <5 samples> <5 water temperatures> ...
+//
+// buf[36..40] are the water temperature in °C, one sample a minute, oldest first. Checked against the
+// panel's temperature setting over five washes: Hot fills read 37-41, Warm 31, rinses 22-27, and an empty
+// drum sits at room temperature.
+const LOG_FRAME_TYPE = 0x02
+const LOG_INNER_LEN = 73
+const LOG_PREFIX = Buffer.from([0x0b, 0x01, 0x0b, 0x65, 0x02])
+const LOG_WATER_TEMP_OFFSET = 40
+const WATER_TEMP_MAX = 100
+
 // The d8 frame is not the ezDispense drawer, and is ignored:
 //
 //     aa 07 20 d8 17 <chk> bb
@@ -211,6 +225,9 @@ const OPT7_OFFSET = 50
 const OPT7_QUICK_LOAD_SENSE = 0x04
 
 const STATE_POWEROFF = 0
+const STATE_PAUSE = 2
+// Off, Initial and Reserved: the settings can be changed, so the record is shown as it is
+const SETTING_STATES = [0, 1, 7]
 
 // modelJSON state indices
 const STATE = Enum.of({
@@ -372,6 +389,8 @@ export default class Device extends AABBDevice {
         readonly recordLen = RECORD_LEN,
         // the ezDispense reservoirs: their levels, default amounts, drawer and nozzle cleaning
         readonly hasEzDispense = true,
+        // the 5-minute log with the water temperature
+        readonly logsWaterTemp = false,
     ) {
         super(HA, thinq, true)
         const hasOpt7 = recordLen > OPT7_OFFSET
@@ -510,6 +529,18 @@ export default class Device extends AABBDevice {
                         // no state_class: resets at each Tub Clean
                         entity_category: 'diagnostic',
                     },
+                    ...(logsWaterTemp && {
+                        water_temp: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-water_temp',
+                            state_topic: '$this/water_temp',
+                            name: 'Water temperature',
+                            icon: 'mdi:thermometer-water',
+                            device_class: 'temperature',
+                            unit_of_measurement: '°C',
+                            state_class: 'measurement',
+                        },
+                    }),
                     cycle_count: {
                         platform: 'sensor',
                         unique_id: '$deviceid-cycle_count',
@@ -923,8 +954,8 @@ export default class Device extends AABBDevice {
         switch (buf[INNER_TYPE_OFFSET]) {
             case STATUS_FRAME_TYPE:
                 if (innerLen !== 2 * this.recordLen) return
-                // skip the "previous state" record
-                return this.processStatus(buf, 13 + this.recordLen, 13 + 2 * this.recordLen + 1)
+                // skip the "previous state" record, but for its state
+                return this.processStatus(buf, 13 + this.recordLen, 13 + 2 * this.recordLen + 1, buf[13 + STATE_OFFSET])
             case SINGLE_STATUS_FRAME_TYPE:
                 if (innerLen !== this.recordLen) return
                 return this.processStatus(buf, SINGLE_RECORD_OFFSET, 13 + this.recordLen + 1)
@@ -947,7 +978,38 @@ export default class Device extends AABBDevice {
                 if (innerLen !== DOOR_EVENT_INNER_LEN) return
                 return this.processDoorEvent(buf)
             }
+            case LOG_FRAME_TYPE:
+                if (
+                    this.logsWaterTemp &&
+                    innerLen === LOG_INNER_LEN &&
+                    buf.subarray(13, 13 + LOG_PREFIX.length).equals(LOG_PREFIX) &&
+                    AABBDevice.endsAfterRecords(buf, 13 + LOG_INNER_LEN)
+                ) {
+                    const temp = buf[LOG_WATER_TEMP_OFFSET]
+                    if (temp > 0 && temp < WATER_TEMP_MAX) this.publishProperty('water_temp', temp)
+                }
+                return
         }
+    }
+
+    // The state of the previous record; undefined until one arrives
+    private lastState?: number
+    // The settings last shown in HA. During a cycle the washer zeroes soil at the rinse, temperature at the
+    // spin, and spin and the option bits at End, and counts Extra Rinse down as it rinses; the values the cycle
+    // started with are kept on show instead, until it powers off or returns to Initial.
+    private readonly shown = new Map<string, number>()
+
+    // `unsetAtZero`: 0 is not a setting (soil, temperature, spin, rinse), so mid-cycle it means cleared.
+    // `keepHigher`: a value that drops mid-cycle was used up (rinses, option bits), unless the washer is
+    // paused, when the user can change it.
+    private shownValue(key: string, raw: number, state: number, unsetAtZero: boolean, keepHigher: boolean) {
+        const held = this.shown.get(key)
+        let value = raw
+        if (held !== undefined && !SETTING_STATES.includes(state)) {
+            if ((unsetAtZero && raw === 0) || (keepHigher && raw < held && state !== STATE_PAUSE)) value = held
+        }
+        this.shown.set(key, value)
+        return value
     }
 
     // The panel menu event (id 0x11) has the same length.
@@ -959,7 +1021,7 @@ export default class Device extends AABBDevice {
         this.publishProperty('door', door === DOOR_OPEN ? 'ON' : 'OFF')
     }
 
-    private processStatus(buf: Buffer, recordOffset: number, expectedLen: number) {
+    private processStatus(buf: Buffer, recordOffset: number, expectedLen: number, previousState?: number) {
         if (buf.length !== expectedLen) return
         const rec = buf.subarray(recordOffset, recordOffset + this.recordLen)
 
@@ -986,16 +1048,22 @@ export default class Device extends AABBDevice {
         this.publishProperty('power', isOff ? 'OFF' : 'ON')
         this.publishProperty('status', STATE.map(state))
         this.publishProperty('course', COURSE.map(course === COURSE_DOWNLOADED ? rec[LOADED_COURSE_OFFSET] : course))
-        this.publishProperty('soil', SOIL.map(rec[SOIL_OFFSET]))
-        this.publishProperty('spin', SPIN.map(rec[SPIN_OFFSET]))
-        this.publishProperty('temp', TEMP.map(rec[TEMP_OFFSET]))
-        this.publishProperty('rinse', RINSE.map(rec[RINSE_OFFSET]))
+        this.publishProperty('soil', SOIL.map(this.shownValue('soil', rec[SOIL_OFFSET], state, true, false)))
+        this.publishProperty('spin', SPIN.map(this.shownValue('spin', rec[SPIN_OFFSET], state, true, false)))
+        this.publishProperty('temp', TEMP.map(this.shownValue('temp', rec[TEMP_OFFSET], state, true, false)))
+        this.publishProperty('rinse', RINSE.map(this.shownValue('rinse', rec[RINSE_OFFSET], state, true, true)))
         this.publishProperty('remaining_time', isOff ? 0 : rec.readUInt16BE(REMAIN_TIME_OFFSET))
         this.publishProperty('initial_time', isOff ? 0 : rec.readUInt16BE(INITIAL_TIME_OFFSET))
         this.publishProperty('energy', rec.readUInt16BE(SPENT_POWER_OFFSET))
         this.publishProperty('reserve_time', rec.readUInt16BE(RESERVE_TIME_OFFSET))
         this.publishProperty('delay_start', (rec[OPT5_OFFSET] & OPT5_DELAY_START) !== 0 ? 'ON' : 'OFF')
-        this.publishProperty('tub_clean_count', rec[TUB_CLEAN_COUNT_OFFSET])
+        // The first record after power-on carries 0 here; the real count follows about a second later. After a
+        // power-on from HA the write reply comes first, so the 0xec frame's own previous record is checked too.
+        const firstAfterOff =
+            this.lastState === undefined || this.lastState === STATE_POWEROFF || previousState === STATE_POWEROFF
+        if (!(firstAfterOff && !isOff && rec[TUB_CLEAN_COUNT_OFFSET] === 0))
+            this.publishProperty('tub_clean_count', rec[TUB_CLEAN_COUNT_OFFSET])
+        this.lastState = state
         this.publishProperty('buzzer', BUZZER.map(rec[BUZZER_OFFSET]))
         if (this.hasEzDispense) {
             this.publishProperty('ez_dispense_detergent', DISPENSE_LEVEL.map(rec[DETERGENT_LEVEL_OFFSET]))
@@ -1007,11 +1075,13 @@ export default class Device extends AABBDevice {
         }
 
         const opt1 = rec[OPT1_OFFSET]
-        this.publishProperty('turbo_wash', (opt1 & OPT1_TURBO_WASH) !== 0 ? 'ON' : 'OFF')
-        this.publishProperty('cold_wash', (opt1 & OPT1_COLD_WASH) !== 0 ? 'ON' : 'OFF')
-        this.publishProperty('pre_wash', (opt1 & OPT1_PRE_WASH) !== 0 ? 'ON' : 'OFF')
-        this.publishProperty('steam', (rec[OPT2_OFFSET] & OPT2_STEAM) !== 0 ? 'ON' : 'OFF')
-        this.publishProperty('fresh_care', (rec[OPT3_OFFSET] & OPT3_FRESH_CARE) !== 0 ? 'ON' : 'OFF')
+        const option = (key: string, byte: number, mask: number) =>
+            this.publishProperty(key, onOff(this.shownValue(key, bit(byte, mask), state, false, true) !== 0))
+        option('turbo_wash', opt1, OPT1_TURBO_WASH)
+        option('cold_wash', opt1, OPT1_COLD_WASH)
+        option('pre_wash', opt1, OPT1_PRE_WASH)
+        option('steam', rec[OPT2_OFFSET], OPT2_STEAM)
+        option('fresh_care', rec[OPT3_OFFSET], OPT3_FRESH_CARE)
         this.publishProperty('child_lock', (rec[OPT4_OFFSET] & OPT4_CONTROL_LOCK) !== 0 ? 'ON' : 'OFF')
         this.publishProperty('cycle_optimization', (rec[OPT6_OFFSET] & OPT6_CYCLE_OPTIMIZATION) !== 0 ? 'ON' : 'OFF')
         this.publishProperty('remote_maintain', (rec[OPT6_OFFSET] & OPT6_REMOTE_MAINTAIN) !== 0 ? 'ON' : 'OFF')

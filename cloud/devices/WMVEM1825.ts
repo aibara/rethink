@@ -43,7 +43,14 @@ export default class Device extends AABBDevice {
     // Models in this family share the status and hood command layouts but differ in vent fan speeds.
     readonly maxFanSpeed: number
 
-    constructor(HA: Connection, thinq: Thinq2Device, meta: Metadata, maxFanSpeed = 2) {
+    constructor(
+        HA: Connection,
+        thinq: Thinq2Device,
+        meta: Metadata,
+        maxFanSpeed = 2,
+        // components a model in the family adds
+        extraComponents: Record<string, object> = {},
+    ) {
         super(HA, thinq, false)
         this.maxFanSpeed = maxFanSpeed
         this.setConfig(
@@ -126,6 +133,7 @@ export default class Device extends AABBDevice {
                         payload_off: 'OFF',
                         name: 'Beeper',
                     },
+                    ...extraComponents,
                 },
             }),
         )

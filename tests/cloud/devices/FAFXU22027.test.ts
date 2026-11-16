@@ -122,3 +122,92 @@ describe('FAFXU22027', () => {
         assert.ok(components.tub_clean_count)
     })
 })
+
+// From a WM5500HVA's capture, 2026-11-15: a Normal wash (Heavy soil, Hot, +1 rinse, TurboWash), 0xec records.
+// Power-on: the first record carries 0 for the washes since the drum clean, the next the real 54.
+const EC_POWER_ON_FIRST = buf(
+    'aaff200a0074002d52000100ec00620000000e0000000000000000000000000000000000000000000000003604000000000000000000003800000000000004000005100e0f2e00000000000000008000800000002e0100060000000100040000000020000000000038000000000000040085f0bb',
+)
+const EC_POWER_ON_SECOND = buf(
+    'aaff200a0074002d55000100ec00620005100e0f2e00000000000000008000800000002e010006000000010004000000002000000000003800000000000004000005100e0f2e00000000000000008000800000002e01000600000001360400000000200000000000380000000000000400e3a1bb',
+)
+// Running: Heavy, Hot, +1, High, TurboWash
+const EC_RUNNING = buf(
+    'aaff200a0074002da1000100ec00620005120f0f2e00000000000000008c008f0003002e0b0306050000023604000000002000001001403800000000000004000005120f0f2e00000000000000008b008f0004002e0b03060500000236040000000020000010014038000000000000040092eebb',
+)
+// Rinsing: soil cleared
+const EC_RINSING = buf(
+    'aaff200a00740032de000100ec00620005120f0f2e00000000000000002f008f0070002e0b0306050000023604000000002000001001403800000000000004000000120f0f2e00000000000000002e008f0071002e0c0b0605000002360400000000200000100140380000000000000400d3acbb',
+)
+// Rinsing: the extra rinse used up (+1 -> Normal)
+const EC_RINSE_USED = buf(
+    'aaff200a007400337e000100ec00620000120f0f2e000000000000000021008f0080002e0c0b06050000023604000000002000001001403800000000000004000000120e0f2e000000000000000020008f0083002e0c0b060500000136040000000020000010010038000000000000040011eabb',
+)
+// Spinning: temperature cleared
+const EC_SPIN = buf(
+    'aaff200a0074003446000100ec00620000120e0f2e000000000000000013008f0094002e0c0b06050000013604000000002000001001003800000000000004000000000e0f2e000000000000000012008f0097002e0e0c0605000000360400000000200000100100380000000000000400d019bb',
+)
+// End: spin and TurboWash cleared
+const EC_END = buf(
+    'aaff200a0074003582000100ec00620000000e0f2e000000000000000001008f00e4002e0e0c06050000003604000000002000001001003800000000000004000000000e002e000000000000000001000000e4002e100e0600000000360400000000000000000100380000000000000400e8ffbb',
+)
+// Off
+const EC_OFF = buf(
+    'aaff200a0074003590000100ec00620000000e002e000000000000000001000000e4002e100e06000000003704000000000000000000003800000000000004000000000e002e000000000000000001000000e4002e00100600000000370400000000000000000000380000000000000400a235bb',
+)
+// The 5-minute log (inner type 0x02): water temperature samples 22 22 22 41 44 as the hot fill comes in,
+// then 41 40 40 40 39.
+const LOG_FILLING = buf(
+    'aaff200a0084002da60002010200490b010b6502a400021700040213021700000117181a1e21161616292cfffffcf1ef000000000000000000000000000000000000000000000000000000000000000000000000bd9a0b3d0105002546414658553232303237000000000000000000000102cb9483c406070000000000000000005f22bb',
+)
+const LOG_WASHING = buf(
+    'aaff200a0084002dec0002010200490b010b6502a40003170009020e021700000221222624282928282827eff0f1eff0000000000000000000000000000000000000000000000000000000000000000000000000b8250b4f0105002546414658553232303237000000000000000000000102cc9483c40607000000000000000000cc6cbb',
+)
+
+describe('FAFXU22027 cycle', () => {
+    test('skips the 0 washes-since-drum-clean in the first record after power-on', () => {
+        const { ha, thinq } = makeDevice()
+        const p = () => ha.devices[DEVICE_ID].properties
+        thinq.emit('data', EC_OFF)
+        assert.equal(p().tub_clean_count, 55)
+        thinq.emit('data', EC_POWER_ON_FIRST)
+        assert.equal(p().status, 'Initial')
+        assert.equal(p().tub_clean_count, 55)
+        thinq.emit('data', EC_POWER_ON_SECOND)
+        assert.equal(p().tub_clean_count, 54)
+    })
+
+    test('keeps the settings the cycle runs with on show as the washer clears them', () => {
+        const { ha, thinq } = makeDevice()
+        const p = () => ha.devices[DEVICE_ID].properties
+        const settings = () => [p().soil, p().temp, p().rinse, p().spin, p().turbo_wash]
+        const running = ['Heavy', 'Hot', '+1', 'High', 'ON']
+        thinq.emit('data', EC_RUNNING)
+        assert.deepEqual(settings(), running)
+        for (const frame of [EC_RINSING, EC_RINSE_USED, EC_SPIN, EC_END]) {
+            thinq.emit('data', frame)
+            assert.deepEqual(settings(), running, p().status as string)
+        }
+        assert.equal(p().status, 'End')
+        thinq.emit('data', EC_OFF)
+        assert.deepEqual(settings(), ['None', 'None', 'Normal', 'None', 'OFF'])
+    })
+
+    test('publishes the water temperature from the 5-minute log', () => {
+        const { ha, thinq } = makeDevice()
+        const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
+        assert.ok(components.water_temp)
+        thinq.emit('data', LOG_FILLING)
+        assert.equal(ha.devices[DEVICE_ID].properties.water_temp, 44)
+        thinq.emit('data', LOG_WASHING)
+        assert.equal(ha.devices[DEVICE_ID].properties.water_temp, 39)
+    })
+
+    test('ignores a log whose trailing block has the wrong length', () => {
+        const { ha, thinq } = makeDevice()
+        const bad = Buffer.from(LOG_WASHING)
+        bad[bad.length - 3 - 37 - 1] = 0x24
+        thinq.emit('data', bad)
+        assert.equal(ha.devices[DEVICE_ID].properties.water_temp, undefined)
+    })
+})

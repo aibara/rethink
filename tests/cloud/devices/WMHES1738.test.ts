@@ -146,3 +146,35 @@ describe(MODEL_ID, () => {
         assert.equal(hex(thinq.outbox[1]), 'AA0EF04322040105010280804FBB')
     })
 })
+
+// After a 3-minute cook at full power, 2026-11-16: the energy report (84 Wh, sent every 5 s for a while) and
+// the two copies of the summary event, which carry the lifetime cook count (0x0368 = 872).
+const SAMPLE_COOK_ENERGY = buf('AA0B413E005400540089BB')
+const SAMPLE_COOK_SUMMARY = buf(
+    'AA0041B200047E0A010300000000000000000000000000000001010005414141414100000000000000000000000000000000000000000000000000000000000000000000000202000000540003680010000600000000000F000B0000001C083B2C0000000018000000000000000065006F006F00000000000000000100000000000000000101BB',
+)
+const SAMPLE_COOK_SUMMARY_SECOND = buf(
+    'AA0041B200047E0A010300000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000202000000000003680010000600000000000F000B0000001C083B2A0000000018000000000000000065006F006F000000000000000001000000000000000001E1BB',
+)
+
+describe(`${MODEL_ID} cook reports`, () => {
+    test('publishes the last cook energy and the lifetime cook count', () => {
+        const { ha, thinq } = makeDevice()
+        const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
+        assert.ok(components.cook_energy)
+        assert.ok(components.cook_count)
+        assert.ok(components.status)
+        thinq.emit('data', SAMPLE_COOK_SUMMARY)
+        assert.equal(ha.devices[DEVICE_ID].properties.cook_count, 872)
+        thinq.emit('data', SAMPLE_COOK_SUMMARY_SECOND)
+        assert.equal(ha.devices[DEVICE_ID].properties.cook_count, 872)
+        thinq.emit('data', SAMPLE_COOK_ENERGY)
+        assert.equal(ha.devices[DEVICE_ID].properties.cook_energy, 84)
+    })
+
+    test('ignores an energy report whose two copies disagree', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', buf('AA0B413E005400550088BB'))
+        assert.equal(ha.devices[DEVICE_ID].properties.cook_energy, undefined)
+    })
+})
