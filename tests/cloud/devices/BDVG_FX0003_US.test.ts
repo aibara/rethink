@@ -1481,4 +1481,46 @@ describe('BDVG_FX0003_US captured completion', () => {
         thinq.emit('data', CAPTURED_COMPLETION) // 03 0a 02 04 03 03 99: the 921st cycle
         assert.equal(ha.devices['test-id'].properties.cycle_count, 921)
     })
+
+    test('the completion carries the cycle length in minutes', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', CAPTURED_COMPLETION)
+        assert.equal(ha.devices['test-id'].properties.cycle_minutes, 37)
+    })
+
+    test('a completion with a zeroed body publishes no length', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', completionNotification())
+        assert.equal(ha.devices['test-id'].properties.cycle_minutes, undefined)
+    })
+})
+
+// From a DLGX5501V's capture, 2026-11-16: the 5-minute log (inner type 0x02) at the start of a dry
+// (temperatures 27 38 45 49 53) and 30 minutes in (62 65 62 65 63).
+const LOG_WARMING = buf(
+    'aaff300a008a0035e500020102004f0a020465039a00020203000004003703050100cfabaab2b5ba4e50595c5d1b262d313510121213124d4d4e4f515658595bafaaa8a8abafb1b2b4151b2024282b2d2e3043003000010000000000000501050025424456475f4658303030335f55530000000000000102cf9483c40607000000000000000000c82fbb',
+)
+const LOG_HOT = buf(
+    'aaff300a008a00379200020102004f0a020465039a0007020300001d00090305020408dcdcdcdcdcdcdcdcdcdc3e413e413f1b1b1a1b1b4d4d4e4f515658595bafaaa8a8abafb1b2b4151b2024282b2d2e3043003000070000000000000501050025424456475f4658303030335f55530000000000000102cf9483c406070000000000000000006624bb',
+)
+
+describe('BDVG_FX0003_US drying log', () => {
+    test('publishes the latest exhaust temperature sample', () => {
+        const { ha, thinq } = makeDevice()
+        assert.ok((ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components.exhaust_temp)
+        thinq.emit('data', LOG_WARMING)
+        assert.equal(ha.devices[DEVICE_ID].properties.exhaust_temp, 53)
+        thinq.emit('data', LOG_HOT)
+        assert.equal(ha.devices[DEVICE_ID].properties.exhaust_temp, 63)
+    })
+
+    test('ignores a log with another prefix or a wrong trailing block', () => {
+        const { ha, thinq } = makeDevice()
+        const badPrefix = Buffer.from(LOG_HOT)
+        badPrefix[13 + 3] = 0x66
+        thinq.emit('data', badPrefix)
+        const badBlock = LOG_HOT.subarray(0, LOG_HOT.length - 2)
+        thinq.emit('data', badBlock)
+        assert.equal(ha.devices[DEVICE_ID].properties.exhaust_temp, undefined)
+    })
 })

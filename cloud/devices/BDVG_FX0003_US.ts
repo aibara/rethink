@@ -110,6 +110,21 @@ const EVENT_FRAME_TYPE = 0x03
 // The following two bytes are a cycle counter, not part of the event signature.
 const COMPLETION_PREFIX = Buffer.from([0x03, 0x0a, 0x02, 0x04, 0x03])
 const COMPLETION_INNER_LEN = 28
+// Events carry the minutes since the cycle started as a u16 at body[12..13]. In the completion, that is the
+// cycle's length: 37-38 over four DLGX5501V dries, matching their start-to-End times. Zero is not published.
+const COMPLETION_MINUTES_OFFSET = 13 + 12
+
+// Inner type 0x02: a log the DLGX5501V sends every 5 minutes while drying, 79 bytes after the header:
+//
+//     0a 02 04 65 <u16 cycle count> 00 <seq> ... <remaining min> ... <2 x 5 moisture> <5 temperatures> ...
+//
+// body[30..34] are a temperature in °C, one sample a minute, oldest first: 55-67 while the burner cycles,
+// falling to ~31 when the door was opened mid-cycle. Probably the exhaust; published as such.
+const LOG_FRAME_TYPE = 0x02
+const LOG_INNER_LEN = 79
+const LOG_PREFIX = Buffer.from([0x0a, 0x02, 0x04, 0x65])
+const LOG_EXHAUST_TEMP_OFFSET = 13 + 34
+const EXHAUST_TEMP_MAX = 120
 // What follows the id in every event: 0b 0a 02 04 0b, 03 0a 02 04 03, ...
 const EVENT_SIGNATURE = Buffer.from([0x0a, 0x02, 0x04])
 const EVENT_INNER_LEN = 18
@@ -437,6 +452,25 @@ export default class Device extends AABBDevice {
                         name: 'Drum light',
                         icon: 'mdi:lightbulb',
                     },
+                    cycle_minutes: {
+                        platform: 'sensor',
+                        unique_id: '$deviceid-cycle_minutes',
+                        state_topic: '$this/cycle_minutes',
+                        name: 'Last cycle length',
+                        icon: 'mdi:timer-check-outline',
+                        device_class: 'duration',
+                        unit_of_measurement: 'min',
+                    },
+                    exhaust_temp: {
+                        platform: 'sensor',
+                        unique_id: '$deviceid-exhaust_temp',
+                        state_topic: '$this/exhaust_temp',
+                        name: 'Exhaust temperature',
+                        icon: 'mdi:thermometer',
+                        device_class: 'temperature',
+                        unit_of_measurement: '°C',
+                        state_class: 'measurement',
+                    },
                     cycle_count: {
                         platform: 'sensor',
                         unique_id: '$deviceid-cycle_count',
@@ -737,6 +771,8 @@ export default class Device extends AABBDevice {
                     AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
                     buf.subarray(13, 18).equals(COMPLETION_PREFIX)
                 ) {
+                    const minutes = buf.readUInt16BE(COMPLETION_MINUTES_OFFSET)
+                    if (minutes > 0) this.publishProperty('cycle_minutes', minutes)
                     if (this.completionState === 'armed') {
                         this.completionState = 'completed'
                         this.HA.publishProperty(this.id, 'cycle_finished', JSON.stringify({ event_type: 'finished' }), {
@@ -747,6 +783,17 @@ export default class Device extends AABBDevice {
                 }
                 if (innerLen !== EVENT_INNER_LEN || buf.length < EVENT_PAYLOAD_OFFSET + EVENT_INNER_LEN) return
                 return this.processEvent(buf.subarray(EVENT_PAYLOAD_OFFSET, EVENT_PAYLOAD_OFFSET + EVENT_INNER_LEN))
+            }
+            case LOG_FRAME_TYPE: {
+                if (
+                    innerLen !== LOG_INNER_LEN ||
+                    !buf.subarray(13, 13 + LOG_PREFIX.length).equals(LOG_PREFIX) ||
+                    !AABBDevice.endsAfterRecords(buf, 13 + LOG_INNER_LEN)
+                )
+                    return
+                const temp = buf[LOG_EXHAUST_TEMP_OFFSET]
+                if (temp > 0 && temp < EXHAUST_TEMP_MAX) this.publishProperty('exhaust_temp', temp)
+                return
             }
         }
     }
