@@ -27,6 +27,9 @@ const COOK_SUMMARY = Buffer.from('41b200047e', 'hex')
 const COOK_SUMMARY_MARK = Buffer.from('02020000', 'hex')
 const COOK_SUMMARY_MARK_OFFSET = 67
 const COOK_COUNT_OFFSET = 74
+// Bytes 90-93: seconds of cooking over the appliance's life. Each cook adds exactly its length: +120 for
+// 2:00, +30 for 0:30, +150 for 2:30, +210 for 3:30 (2026-11-16); 0x001c083b = 1,837,115 s = 510 h.
+const COOK_SECONDS_OFFSET = 90
 
 // At every connect: an 81-byte info event with the part number, "WMHES1738" and the firmware date, then the
 // appliance's clock, 12-hour, as hours, minutes, seconds after 43 19 00 41. On fourteen connects it was within
@@ -68,8 +71,32 @@ export default class Device extends WMVEM1825 {
                 state_class: 'total_increasing',
                 entity_category: 'diagnostic',
             },
+            cook_seconds: {
+                platform: 'sensor',
+                unique_id: '$deviceid-cook_seconds',
+                state_topic: '$this/cook_seconds',
+                name: 'Last cook length',
+                icon: 'mdi:timer-check-outline',
+                device_class: 'duration',
+                unit_of_measurement: 's',
+            },
+            cook_hours: {
+                platform: 'sensor',
+                unique_id: '$deviceid-cook_hours',
+                state_topic: '$this/cook_hours',
+                name: 'Cooking time',
+                icon: 'mdi:timer-sand-complete',
+                device_class: 'duration',
+                unit_of_measurement: 'h',
+                state_class: 'total_increasing',
+                entity_category: 'diagnostic',
+            },
         })
     }
+
+    // The lifetime cooking seconds from the previous summary. Not persisted: the first cook after a restart
+    // reports the lifetime hours but no length.
+    private lastCookSeconds?: number
 
     processAABB(buf: Buffer) {
         if (
@@ -86,6 +113,14 @@ export default class Device extends WMVEM1825 {
             buf.subarray(COOK_SUMMARY_MARK_OFFSET, COOK_SUMMARY_MARK_OFFSET + 4).equals(COOK_SUMMARY_MARK)
         ) {
             this.publishProperty('cook_count', buf.readUInt16BE(COOK_COUNT_OFFSET))
+            const total = buf.readUInt32BE(COOK_SECONDS_OFFSET)
+            // The second copy of the summary repeats the total; only an increase is a new cook
+            if (this.lastCookSeconds !== undefined && total > this.lastCookSeconds)
+                this.publishProperty('cook_seconds', total - this.lastCookSeconds)
+            if (this.lastCookSeconds === undefined || total > this.lastCookSeconds) {
+                this.lastCookSeconds = total
+                this.publishProperty('cook_hours', Math.round(total / 36) / 100)
+            }
             return
         }
         if (

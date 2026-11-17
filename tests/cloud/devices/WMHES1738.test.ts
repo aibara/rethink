@@ -157,6 +157,14 @@ const SAMPLE_COOK_SUMMARY_SECOND = buf(
     'AA0041B200047E0A010300000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000202000000000003680010000600000000000F000B0000001C083B2A0000000018000000000000000065006F006F000000000000000001000000000000000001E1BB',
 )
 
+// The next cook's summary, 2026-11-16 02:40:45 UTC: a 2:00 cook, 56 Wh, cook 873; lifetime seconds 0x001c08b3.
+const SAMPLE_NEXT_COOK_SUMMARY = buf(
+    'AA0041B200047E0A010300000000000000000000000000000001010003414141000000000000000000000000000000000000000000000000000000000000000000000000000202000000380003690010000600000000000F000B0000001C08B335000000001E000000000000000072007800780000000000000000010000000000000000010EBB',
+)
+const SAMPLE_NEXT_COOK_SUMMARY_SECOND = buf(
+    'AA0041B200047E0A010300000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000202000000000003690010000600000000000F000B0000001C08B333000000001E000000000000000072007800780000000000000000010000000000000000010EBB',
+)
+
 // The info event at connect, 2026-11-16 04:11:13 UTC (8:11:13 PM local): the clock reads 8:11:12.
 const SAMPLE_INFO = buf(
     'AA0041B2000B510A01030101A9160300765341413433313135313031574D484553313733380000000000000000000000323032313039323743190041080B0C000100010300000000000001010101010101002C000000001CF1BB',
@@ -182,6 +190,24 @@ describe(`${MODEL_ID} cook reports`, () => {
         assert.equal(ha.devices[DEVICE_ID].properties.cook_count, 872)
         thinq.emit('data', SAMPLE_COOK_ENERGY)
         assert.equal(ha.devices[DEVICE_ID].properties.cook_energy, 84)
+    })
+
+    test('publishes lifetime cooking hours, and each cook length from the next summary', () => {
+        const { ha, thinq } = makeDevice()
+        const p = () => ha.devices[DEVICE_ID].properties
+        const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
+        assert.ok(components.cook_seconds)
+        assert.ok(components.cook_hours)
+        thinq.emit('data', SAMPLE_COOK_SUMMARY) // 0x001c083b s
+        assert.equal(p().cook_hours, 510.31)
+        assert.equal(p().cook_seconds, undefined) // no earlier total to compare with
+        thinq.emit('data', SAMPLE_COOK_SUMMARY_SECOND) // same total
+        assert.equal(p().cook_seconds, undefined)
+        thinq.emit('data', SAMPLE_NEXT_COOK_SUMMARY) // 0x001c08b3: a 2:00 cook
+        assert.equal(p().cook_seconds, 120)
+        assert.equal(p().cook_hours, 510.34)
+        thinq.emit('data', SAMPLE_NEXT_COOK_SUMMARY_SECOND)
+        assert.equal(p().cook_seconds, 120)
     })
 
     test('ignores an energy report whose two copies disagree', () => {
