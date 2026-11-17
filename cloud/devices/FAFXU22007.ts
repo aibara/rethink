@@ -63,21 +63,32 @@ const DOOR_SHUT = 2
 //
 // buf[36..40] are the water temperature in °C, one sample a minute, oldest first. Checked against the
 // panel's temperature setting over five washes: Hot fills read 37-41, Warm 31, rinses 22-27, and an empty
-// drum sits at room temperature.
+// drum sits at room temperature. A Tub Clean heats its water: 21 -> 66 °C over half an hour.
+// buf[30] numbers the logs of a cycle from 1.
 const LOG_FRAME_TYPE = 0x02
 const LOG_INNER_LEN = 73
 const LOG_PREFIX = Buffer.from([0x0b, 0x01, 0x0b, 0x65, 0x02])
+const LOG_SEQ_OFFSET = 30
+const LOG_WATER_TEMPS_OFFSET = 36
 const LOG_WATER_TEMP_OFFSET = 40
 const WATER_TEMP_MAX = 100
 
 // Inner type 0x04, id 03: a summary the WM5500HVA sends once, as a cycle reaches End. 69 bytes, starting
-// 03 01 01 00 04 05 06 07. Checked over five washes: body[20] is the number of rinses (3 with +1 Extra Rinse,
-// 2 without) and body[22] the highest water temperature in °C (Warm 31, Hot 37-45, matching the log).
+// 03 01 01 00 04 05 06 07. Checked over five washes and a Tub Clean: body[20] is the number of rinses (3 with
+// +1 Extra Rinse, 2 without, 1 for a Tub Clean); body[22] the hottest water that came in (°C: Warm 31, Hot
+// 37-45), not heated water: 20 after a Tub Clean that heated the drum to 66, so the peak published also takes
+// the logs' samples. body[31] is the spin setting and body[32] the top speed reached, in tens of rpm (High:
+// 120, reached 115-120; Medium: 100).
 const SUMMARY_FRAME_TYPE = 0x04
 const SUMMARY_INNER_LEN = 69
 const SUMMARY_PREFIX = Buffer.from('0301010004050607', 'hex')
 const SUMMARY_RINSES_OFFSET = 13 + 20
-const SUMMARY_PEAK_WATER_TEMP_OFFSET = 13 + 22
+const SUMMARY_FILL_TEMP_OFFSET = 13 + 22
+const SUMMARY_TOP_SPIN_OFFSET = 13 + 32
+
+// The completion notification's u16 at buf[23..24] is the cycle's length in minutes: 147, 36, 37, 27, 133
+// and 84 (a Tub Clean) over six cycles, each matching its Detecting-to-End time.
+const COMPLETION_MINUTES_OFFSET = 23
 
 // The d8 frame is not the ezDispense drawer, and is ignored:
 //
@@ -565,6 +576,23 @@ export default class Device extends AABBDevice {
                             device_class: 'temperature',
                             unit_of_measurement: '°C',
                         },
+                        cycle_minutes: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-cycle_minutes',
+                            state_topic: '$this/cycle_minutes',
+                            name: 'Last cycle length',
+                            icon: 'mdi:timer-check-outline',
+                            device_class: 'duration',
+                            unit_of_measurement: 'min',
+                        },
+                        top_spin: {
+                            platform: 'sensor',
+                            unique_id: '$deviceid-top_spin',
+                            state_topic: '$this/top_spin',
+                            name: 'Last cycle top spin speed',
+                            icon: 'mdi:rotate-right',
+                            unit_of_measurement: 'rpm',
+                        },
                     }),
                     cycle_count: {
                         platform: 'sensor',
@@ -827,6 +855,9 @@ export default class Device extends AABBDevice {
     // A finish retry at startup is not a new completion. No lifecycle is persisted.
     private completionState: 'unarmed' | 'armed' | 'completed' = 'unarmed'
 
+    // The hottest water sample in this cycle's logs, 0 until one arrives
+    private peakWaterTemp = 0
+
     start() {
         this.send(Buffer.from(STATUS_REQUEST, 'hex'))
         this.publishProblem()
@@ -992,6 +1023,8 @@ export default class Device extends AABBDevice {
                     AABBDevice.endsAfterRecords(buf, 13 + COMPLETION_INNER_LEN) &&
                     buf.subarray(13, 18).equals(COMPLETION_PREFIX)
                 ) {
+                    const minutes = buf.readUInt16BE(COMPLETION_MINUTES_OFFSET)
+                    if (this.hasCycleLogs && minutes > 0) this.publishProperty('cycle_minutes', minutes)
                     if (this.completionState === 'armed') {
                         this.completionState = 'completed'
                         this.HA.publishProperty(this.id, 'cycle_finished', JSON.stringify({ event_type: 'finished' }), {
@@ -1010,6 +1043,11 @@ export default class Device extends AABBDevice {
                     buf.subarray(13, 13 + LOG_PREFIX.length).equals(LOG_PREFIX) &&
                     AABBDevice.endsAfterRecords(buf, 13 + LOG_INNER_LEN)
                 ) {
+                    if (buf[LOG_SEQ_OFFSET] === 1) this.peakWaterTemp = 0
+                    for (const sample of buf.subarray(LOG_WATER_TEMPS_OFFSET, LOG_WATER_TEMP_OFFSET + 1)) {
+                        if (sample > 0 && sample < WATER_TEMP_MAX)
+                            this.peakWaterTemp = Math.max(this.peakWaterTemp, sample)
+                    }
                     const temp = buf[LOG_WATER_TEMP_OFFSET]
                     if (temp > 0 && temp < WATER_TEMP_MAX) this.publishProperty('water_temp', temp)
                 }
@@ -1022,8 +1060,12 @@ export default class Device extends AABBDevice {
                     AABBDevice.endsAfterRecords(buf, 13 + SUMMARY_INNER_LEN)
                 ) {
                     this.publishProperty('rinse_count', buf[SUMMARY_RINSES_OFFSET])
-                    const peak = buf[SUMMARY_PEAK_WATER_TEMP_OFFSET]
-                    if (peak > 0 && peak < WATER_TEMP_MAX) this.publishProperty('peak_water_temp', peak)
+                    const fill = buf[SUMMARY_FILL_TEMP_OFFSET]
+                    const peak = Math.max(fill > 0 && fill < WATER_TEMP_MAX ? fill : 0, this.peakWaterTemp)
+                    if (peak > 0) this.publishProperty('peak_water_temp', peak)
+                    this.peakWaterTemp = 0
+                    const topSpin = buf[SUMMARY_TOP_SPIN_OFFSET]
+                    if (topSpin > 0) this.publishProperty('top_spin', topSpin * 10)
                 }
                 return
         }

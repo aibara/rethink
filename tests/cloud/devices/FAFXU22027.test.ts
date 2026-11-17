@@ -169,15 +169,70 @@ const SUMMARY = buf(
     'aaff200a005700358400010104004503010100040506073900000100ff01550000000003162d00022318010004fd78780000fdfd000000fd000002a75505000003000620250056740000422c36dd48858109091abf68bb',
 )
 
+// From a WM5500HVA's capture, 2026-11-17: a Tub Clean (84 min, spin Medium), whose heater took the drum to
+// 66 °C. Its first log (water 21 21 21 24 27), the log with the peak (65 66 66 44 44, then drained), the
+// completion notification and the summary, whose fill temperature is 20.
+const TUB_LOG_FIRST = buf(
+    'aaff200a00840088490002010200490b010b6502a500026900030119011d0000011317171919151515181bfffff8f3f3000000000000000000000000000000000000000000000000000000000000000000000000be0a00000105002546414658553232303237000000000000000000000102cd9483c406070000000000000000006468bb',
+)
+const TUB_LOG_PEAK = buf(
+    'aaff200a0084008bb90002010200490b010b6502a500086900210038011d0000072a2a2a29294142422c2cf3f3f3eceb000000000000000007260000000000000000019f00000000000000000013000000000000b6500d3a0105002546414658553232303237000000000000000000000102ce9483c406070000000000000000004926bb',
+)
+const TUB_COMPLETION = buf(
+    'aaff200a00b4008ec6000201030079080b010b0802a5003d6900540d0000000003000080236900000101005e06000305016b02600000eaff0100180047007f0075007100670003e803e801010048005502050154010601500004010101000002000002000004000106010205010104000103000103000000000000000000000000000000000103000105002546414658553232303237000000000000000000000102ce9483c40607000000000000000000d518bb',
+)
+const TUB_SUMMARY = buf(
+    'aaff200a0057008ecb00010104004503010100040506073900000000ff01490000000001151408022916000001fd64640000fdfd000000fd000002a80005000003000d201500006a0002402c68bb40431a000109c6e3bb',
+)
+
 describe('FAFXU22027 cycle', () => {
-    test('publishes the rinses and peak water temperature from the end-of-cycle summary', () => {
+    test('publishes the rinses, peak water temperature and top spin from the end-of-cycle summary', () => {
         const { ha, thinq } = makeDevice()
         const components = (ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components
         assert.ok(components.rinse_count)
         assert.ok(components.peak_water_temp)
+        assert.ok(components.top_spin)
         thinq.emit('data', SUMMARY)
         assert.equal(ha.devices[DEVICE_ID].properties.rinse_count, 3)
         assert.equal(ha.devices[DEVICE_ID].properties.peak_water_temp, 45)
+        assert.equal(ha.devices[DEVICE_ID].properties.top_spin, 1200)
+    })
+
+    test("keeps the summary's fill temperature when the logs were cooler", () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', LOG_FILLING)
+        thinq.emit('data', LOG_WASHING)
+        thinq.emit('data', SUMMARY)
+        assert.equal(ha.devices[DEVICE_ID].properties.peak_water_temp, 45)
+    })
+
+    test('takes the peak of a heated Tub Clean from the logs, with its length and spin', () => {
+        const { ha, thinq } = makeDevice()
+        const p = () => ha.devices[DEVICE_ID].properties
+        assert.ok((ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components.cycle_minutes)
+        thinq.emit('data', TUB_LOG_FIRST)
+        thinq.emit('data', TUB_LOG_PEAK)
+        assert.equal(p().water_temp, 44)
+        thinq.emit('data', TUB_COMPLETION)
+        assert.equal(p().cycle_minutes, 84)
+        thinq.emit('data', TUB_SUMMARY)
+        assert.equal(p().rinse_count, 1)
+        assert.equal(p().peak_water_temp, 66)
+        assert.equal(p().top_spin, 1000)
+    })
+
+    test("starts each cycle's peak afresh", () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', TUB_LOG_PEAK)
+        thinq.emit('data', TUB_LOG_FIRST)
+        thinq.emit('data', TUB_SUMMARY)
+        assert.equal(ha.devices[DEVICE_ID].properties.peak_water_temp, 27)
+    })
+
+    test('reads the length of a wash from its completion notification', () => {
+        const { ha, thinq } = makeDevice()
+        thinq.emit('data', COMPLETION)
+        assert.equal(ha.devices[DEVICE_ID].properties.cycle_minutes, 37)
     })
 
     test('ignores a summary with an unknown prefix', () => {
