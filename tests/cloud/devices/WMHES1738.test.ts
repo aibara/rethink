@@ -165,6 +165,15 @@ const SAMPLE_NEXT_COOK_SUMMARY_SECOND = buf(
     'AA0041B200047E0A010300000000000000000000000000000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000202000000000003690010000600000000000F000B0000001C08B333000000001E000000000000000072007800780000000000000000010000000000000000010EBB',
 )
 
+// Temperature reports: idle, 2026-11-17 14:06 UTC (0x21 → 65 °F; the living room read 65.1 °F), and 3 min after
+// three back-to-back cooks, 2026-11-16 02:44 UTC (0x35 → 85 °F).
+const SAMPLE_TEMPERATURE_IDLE = buf(
+    'AA0041CF002A0A01030000000000000000000000000000000000000000000000000000010000020200002100000000177ABB',
+)
+const SAMPLE_TEMPERATURE_AFTER_COOKS = buf(
+    'AA0041CF002A0A01030000000000000000000000000000000000000000000000000000010000020200003500000000221BBB',
+)
+
 // The info event at connect, 2026-11-16 04:11:13 UTC (8:11:13 PM local): the clock reads 8:11:12.
 const SAMPLE_INFO = buf(
     'AA0041B2000B510A01030101A9160300765341413433313135313031574D484553313733380000000000000000000000323032313039323743190041080B0C000100010300000000000001010101010101002C000000001CF1BB',
@@ -208,6 +217,15 @@ describe(`${MODEL_ID} cook reports`, () => {
         assert.equal(p().cook_hours, 510.34)
         thinq.emit('data', SAMPLE_NEXT_COOK_SUMMARY_SECOND)
         assert.equal(p().cook_seconds, 120)
+    })
+
+    test('publishes the temperature report in °F', () => {
+        const { ha, thinq } = makeDevice()
+        assert.ok((ha.devices[DEVICE_ID].config as { components: Record<string, unknown> }).components.temperature)
+        thinq.emit('data', SAMPLE_TEMPERATURE_IDLE)
+        assert.equal(ha.devices[DEVICE_ID].properties.temperature, 65)
+        thinq.emit('data', SAMPLE_TEMPERATURE_AFTER_COOKS)
+        assert.equal(ha.devices[DEVICE_ID].properties.temperature, 85)
     })
 
     test('ignores an energy report whose two copies disagree', () => {

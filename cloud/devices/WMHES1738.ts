@@ -31,6 +31,20 @@ const COOK_COUNT_OFFSET = 74
 // 2:00, +30 for 0:30, +150 for 2:30, +210 for 3:30 (2026-11-16); 0x001c083b = 1,837,115 s = 510 h.
 const COOK_SECONDS_OFFSET = 90
 
+// A 46-byte report, sent every few hours while idle and every few minutes after a cook:
+//
+//     41 cf 00 2a ... 02 02 00 00 <t> 00 00 00 00
+//
+// t is a temperature in °F above freezing (°F - 32, i.e. °C × 1.8). Idle, it matched the room within about
+// 1 °F on five readings (64-67 °F); back-to-back cooks took it to 93 °F, and it kept rising for ~20 min after
+// a cook as the heat soaked in. Where the sensor sits is not known.
+const TEMPERATURE_REPORT = Buffer.from('41cf002a', 'hex')
+const TEMPERATURE_REPORT_LEN = 46
+const TEMPERATURE_MARK = Buffer.from('02020000', 'hex')
+const TEMPERATURE_MARK_OFFSET = 36
+const TEMPERATURE_OFFSET = 40
+const FAHRENHEIT_ZERO = 32
+
 // At every connect: an 81-byte info event with the part number, "WMHES1738" and the firmware date, then the
 // appliance's clock, 12-hour, as hours, minutes, seconds after 43 19 00 41. On fourteen connects it was within
 // 2 s of local time (the clock is synced from HA daily).
@@ -71,6 +85,15 @@ export default class Device extends WMVEM1825 {
                 state_class: 'total_increasing',
                 entity_category: 'diagnostic',
             },
+            temperature: {
+                platform: 'sensor',
+                unique_id: '$deviceid-temperature',
+                state_topic: '$this/temperature',
+                name: 'Temperature',
+                device_class: 'temperature',
+                unit_of_measurement: '°F',
+                state_class: 'measurement',
+            },
             cook_seconds: {
                 platform: 'sensor',
                 unique_id: '$deviceid-cook_seconds',
@@ -99,6 +122,14 @@ export default class Device extends WMVEM1825 {
     private lastCookSeconds?: number
 
     processAABB(buf: Buffer) {
+        if (
+            buf.length === TEMPERATURE_REPORT_LEN &&
+            buf.subarray(0, 4).equals(TEMPERATURE_REPORT) &&
+            buf.subarray(TEMPERATURE_MARK_OFFSET, TEMPERATURE_MARK_OFFSET + 4).equals(TEMPERATURE_MARK)
+        ) {
+            this.publishProperty('temperature', buf[TEMPERATURE_OFFSET] + FAHRENHEIT_ZERO)
+            return
+        }
         if (
             buf.length === COOK_ENERGY_LEN &&
             buf.subarray(0, 2).equals(COOK_ENERGY) &&
